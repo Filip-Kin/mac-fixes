@@ -25,6 +25,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory) // menu-bar only, no dock icon
         features.bootstrap()
         setupStatusItem()
+        NotificationCenter.default.addObserver(forName: .recordingStateChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateStatusIcon() }
+        }
+    }
+
+    private func updateStatusIcon() {
+        let recording = features.recording.isRecording
+        let name = recording ? "record.circle" : "wrench.and.screwdriver"
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "Filip's Mac Fixes")
+        if recording {
+            image?.isTemplate = false
+            statusItem.button?.contentTintColor = .systemRed
+        } else {
+            statusItem.button?.contentTintColor = nil
+        }
+        statusItem.button?.image = image
     }
 
     private func setupStatusItem() {
@@ -46,6 +62,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addActionItem(menu, "Area screenshot → file",
                       shortcut: features.screenshots.areaToFileKeys.first,
                       action: #selector(shotFile))
+
+        menu.addItem(.separator())
+
+        let recording = features.recording.isRecording
+        addActionItem(menu, recording ? "Stop recording" : "Record area…",
+                      shortcut: recording ? nil : features.recording.recordKeys.first,
+                      action: #selector(toggleRecording))
 
         menu.addItem(.separator())
 
@@ -77,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func shotClipboard() { features.screenshots.areaToClipboard() }
     @objc private func shotFile() { features.screenshots.areaToFile() }
+    @objc private func toggleRecording() { features.recording.toggle() }
 
     @objc private func openSettings() {
         if settingsWindow == nil {

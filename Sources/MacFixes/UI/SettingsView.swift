@@ -5,6 +5,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case screenshots = "Screenshots"
     case keyboard = "Keyboard"
     case windows = "Windows"
+    case recording = "Screen Recording"
     case tweaks = "System Tweaks"
     case permissions = "Permissions"
     case about = "About"
@@ -16,6 +17,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .screenshots: return "camera.viewfinder"
         case .keyboard: return "keyboard"
         case .windows: return "macwindow"
+        case .recording: return "record.circle"
         case .tweaks: return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .about: return "info.circle"
@@ -41,6 +43,7 @@ struct SettingsView: View {
                     case .screenshots: ScreenshotPane(features: features)
                     case .keyboard: KeyboardPane(features: features)
                     case .windows: WindowsPane(features: features)
+                    case .recording: RecordingPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
                     case .about: AboutPane()
@@ -227,6 +230,57 @@ private struct WindowsPane: View {
     private func toggle(_ label: String, get: @escaping @Sendable () -> Bool,
                         set: @escaping @Sendable (Bool) -> Void) -> some View {
         Toggle(label, isOn: Binding(get: get, set: { set($0); refresh.toggle() }))
+    }
+}
+
+private struct RecordingPane: View {
+    @ObservedObject var features: FeatureManager
+    @State private var refresh = false
+
+    var body: some View {
+        let rec = features.recording
+        VStack(alignment: .leading, spacing: 16) {
+            PaneHeader("Screen Recording", "Record a selected area to MP4 or GIF.")
+            Toggle("Enable recording hotkeys", isOn: $features.recordingEnabled)
+
+            Button(rec.isRecording ? "Stop recording" : "Record area…") { rec.toggle(); refresh.toggle() }
+
+            Divider()
+
+            Picker("Format", selection: Binding(
+                get: { rec.format }, set: { rec.format = $0; refresh.toggle() })) {
+                Text("MP4").tag(RecordingFormat.mp4)
+                Text("GIF").tag(RecordingFormat.gif)
+            }.pickerStyle(.segmented).frame(width: 200)
+
+            Stepper("Frame rate: \(rec.fps) fps", value: Binding(
+                get: { rec.fps }, set: { rec.fps = $0; refresh.toggle() }), in: 10...60, step: 5)
+                .frame(width: 260)
+
+            Toggle("Show cursor", isOn: Binding(
+                get: { rec.showsCursor }, set: { rec.showsCursor = $0; refresh.toggle() }))
+
+            HStack {
+                Text("Save to: \(rec.saveDirectory.path)").font(.callout).foregroundStyle(.secondary)
+                Button("Change…") { chooseFolder(rec) }
+            }
+
+            Divider()
+
+            HotKeyListEditor(label: "Start / stop recording", combos: rec.recordKeys) { new in
+                rec.recordKeys = new; rec.reloadHotKeys(); refresh.toggle()
+            }
+            Text("GIF uses the built-in encoder (256 colours), downsized to 800px wide — good for short clips, not studio quality.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        .id(refresh)
+    }
+
+    private func chooseFolder(_ rec: RecordingFeature) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        if panel.runModal() == .OK, let url = panel.url { rec.setSaveDirectory(url); refresh.toggle() }
     }
 }
 
