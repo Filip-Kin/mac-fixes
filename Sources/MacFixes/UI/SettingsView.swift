@@ -2,10 +2,9 @@ import SwiftUI
 
 enum SettingsPane: String, CaseIterable, Identifiable {
     case scroll = "Scroll"
-    case screenshots = "Screenshots"
+    case capture = "Screen Capture"
     case keyboard = "Keyboard"
     case windows = "Windows"
-    case recording = "Screen Recording"
     case tweaks = "System Tweaks"
     case permissions = "Permissions"
     case about = "About"
@@ -14,10 +13,9 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .scroll: return "computermouse"
-        case .screenshots: return "camera.viewfinder"
+        case .capture: return "camera.viewfinder"
         case .keyboard: return "keyboard"
         case .windows: return "macwindow"
-        case .recording: return "record.circle"
         case .tweaks: return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .about: return "info.circle"
@@ -40,10 +38,9 @@ struct SettingsView: View {
                 Group {
                     switch pane ?? .scroll {
                     case .scroll: ScrollPane(features: features)
-                    case .screenshots: ScreenshotPane(features: features)
+                    case .capture: CapturePane(features: features)
                     case .keyboard: KeyboardPane(features: features)
                     case .windows: WindowsPane(features: features)
-                    case .recording: RecordingPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
                     case .about: AboutPane()
@@ -72,60 +69,63 @@ private struct ScrollPane: View {
     }
 }
 
-private struct ScreenshotPane: View {
+private struct CapturePane: View {
     @ObservedObject var features: FeatureManager
     @State private var refresh = false
 
     var body: some View {
-        let shot = features.screenshots
+        let cap = features.capture
         VStack(alignment: .leading, spacing: 16) {
-            PaneHeader("Screenshots", "Area capture to clipboard or file, using the built-in engine.")
-            Toggle("Enable screenshot hotkeys", isOn: $features.screenshotsEnabled)
+            PaneHeader("Screen Capture", "Screenshots and recording. Each combination can have its own shortcut and menu item.")
+            Toggle("Enable capture shortcuts", isOn: $features.captureEnabled)
 
-            HStack {
-                Button("Area → Clipboard") { shot.areaToClipboard() }
-                Button("Area → File") { shot.areaToFile() }
-                Button("Window → Clipboard") { shot.windowToClipboard() }
+            HStack(spacing: 24) {
+                Toggle("Save to file", isOn: Binding(
+                    get: { cap.saveToFile }, set: { cap.saveToFile = $0; refresh.toggle() }))
+                Toggle("Copy to clipboard", isOn: Binding(
+                    get: { cap.copyToClipboard }, set: { cap.copyToClipboard = $0; refresh.toggle() }))
             }
-
-            Divider()
-
-            HotKeyListEditor(label: "Area → Clipboard",
-                             combos: shot.areaToClipboardKeys) { new in
-                shot.areaToClipboardKeys = new; shot.reloadHotKeys(); refresh.toggle()
-            }
-            HotKeyListEditor(label: "Area → File",
-                             combos: shot.areaToFileKeys) { new in
-                shot.areaToFileKeys = new; shot.reloadHotKeys(); refresh.toggle()
-            }
-            Text("Print Screen registers as F13. On the built-in keyboard F12 is Volume Up, so ⌘F12 needs Fn held unless you enable the ‘F-keys act as standard function keys’ tweak.")
+            Text("Both apply to every capture. With ‘save to file’ off, captures go to a temp folder so they can still be copied to the clipboard.")
                 .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Text("Save to: \(cap.saveLocation.path)").font(.callout).foregroundStyle(.secondary)
+                Button("Change…") { chooseFolder(cap) }
+            }
+            HStack(spacing: 24) {
+                Stepper("Recording: \(cap.fps) fps", value: Binding(
+                    get: { cap.fps }, set: { cap.fps = $0; refresh.toggle() }), in: 10...60, step: 5)
+                    .frame(width: 200)
+                Toggle("Show cursor", isOn: Binding(
+                    get: { cap.showCursor }, set: { cap.showCursor = $0; refresh.toggle() }))
+            }
 
             Divider()
 
-            Picker("File format", selection: Binding(
-                get: { shot.fileType }, set: { shot.fileType = $0 })) {
-                Text("PNG").tag("png"); Text("JPG").tag("jpg")
-            }.pickerStyle(.segmented).frame(width: 220)
-
-            Toggle("Play shutter sound", isOn: Binding(
-                get: { shot.playSound }, set: { shot.playSound = $0 }))
-
-            HStack {
-                Text("Save to: \(shot.saveDirectory.path)").font(.callout).foregroundStyle(.secondary)
-                Button("Change…") { chooseFolder(shot) }
+            ForEach(CaptureTarget.allCases) { target in
+                Text(target.label).font(.headline)
+                ForEach(allCaptureActions.filter { $0.target == target }) { action in
+                    HStack(alignment: .top) {
+                        HotKeyListEditor(label: action.rowLabel, combos: cap.shortcut(for: action)) { new in
+                            cap.setShortcut(new, for: action); cap.reloadHotKeys(); refresh.toggle()
+                        }
+                        Spacer()
+                        Toggle("In menu", isOn: Binding(
+                            get: { cap.showInMenu(action) },
+                            set: { cap.setShowInMenu($0, for: action); refresh.toggle() }))
+                            .toggleStyle(.checkbox)
+                    }
+                    Divider()
+                }
             }
         }
         .id(refresh)
     }
 
-    private func chooseFolder(_ shot: ScreenshotFeature) {
+    private func chooseFolder(_ cap: CaptureFeature) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        if panel.runModal() == .OK, let url = panel.url {
-            shot.setSaveDirectory(url); refresh.toggle()
-        }
+        if panel.runModal() == .OK, let url = panel.url { cap.setSaveLocation(url); refresh.toggle() }
     }
 }
 
@@ -230,57 +230,6 @@ private struct WindowsPane: View {
     private func toggle(_ label: String, get: @escaping @Sendable () -> Bool,
                         set: @escaping @Sendable (Bool) -> Void) -> some View {
         Toggle(label, isOn: Binding(get: get, set: { set($0); refresh.toggle() }))
-    }
-}
-
-private struct RecordingPane: View {
-    @ObservedObject var features: FeatureManager
-    @State private var refresh = false
-
-    var body: some View {
-        let rec = features.recording
-        VStack(alignment: .leading, spacing: 16) {
-            PaneHeader("Screen Recording", "Record a selected area to MP4 or GIF.")
-            Toggle("Enable recording hotkeys", isOn: $features.recordingEnabled)
-
-            Button(rec.isRecording ? "Stop recording" : "Record area…") { rec.toggle(); refresh.toggle() }
-
-            Divider()
-
-            Picker("Format", selection: Binding(
-                get: { rec.format }, set: { rec.format = $0; refresh.toggle() })) {
-                Text("MP4").tag(RecordingFormat.mp4)
-                Text("GIF").tag(RecordingFormat.gif)
-            }.pickerStyle(.segmented).frame(width: 200)
-
-            Stepper("Frame rate: \(rec.fps) fps", value: Binding(
-                get: { rec.fps }, set: { rec.fps = $0; refresh.toggle() }), in: 10...60, step: 5)
-                .frame(width: 260)
-
-            Toggle("Show cursor", isOn: Binding(
-                get: { rec.showsCursor }, set: { rec.showsCursor = $0; refresh.toggle() }))
-
-            HStack {
-                Text("Save to: \(rec.saveDirectory.path)").font(.callout).foregroundStyle(.secondary)
-                Button("Change…") { chooseFolder(rec) }
-            }
-
-            Divider()
-
-            HotKeyListEditor(label: "Start / stop recording", combos: rec.recordKeys) { new in
-                rec.recordKeys = new; rec.reloadHotKeys(); refresh.toggle()
-            }
-            Text("GIF uses the built-in encoder (256 colours), downsized to 800px wide — good for short clips, not studio quality.")
-                .font(.callout).foregroundStyle(.secondary)
-        }
-        .id(refresh)
-    }
-
-    private func chooseFolder(_ rec: RecordingFeature) {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        if panel.runModal() == .OK, let url = panel.url { rec.setSaveDirectory(url); refresh.toggle() }
     }
 }
 

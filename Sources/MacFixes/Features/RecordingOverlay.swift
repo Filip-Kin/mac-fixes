@@ -30,11 +30,16 @@ final class RecordingOverlay: @unchecked Sendable {
             b.orderFront(nil)
             border = b
 
-            // Control bar centred below the area.
+            // Control bar centred below the area — or above it if the area is
+            // near the bottom of the screen (so the buttons stay reachable).
             let size = CGSize(width: 200, height: 44)
             let host = NSHostingView(rootView: RecordingControls(onStop: onStop, onCancel: onCancel))
             host.frame = CGRect(origin: .zero, size: size)
-            let cFrame = CGRect(x: area.midX - size.width / 2, y: area.minY - size.height - 8,
+            let screenBottom = (NSScreen.screens.first { $0.frame.intersects(area) } ?? NSScreen.main)?
+                .visibleFrame.minY ?? 0
+            let below = area.minY - size.height - 8
+            let cy = below < screenBottom ? area.maxY + 8 : below
+            let cFrame = CGRect(x: area.midX - size.width / 2, y: cy,
                                 width: size.width, height: size.height)
             let c = NSWindow(contentRect: cFrame, styleMask: .borderless, backing: .buffered, defer: false)
             c.level = .statusBar

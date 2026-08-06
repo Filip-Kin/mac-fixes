@@ -8,10 +8,9 @@ final class FeatureManager: ObservableObject {
     static let shared = FeatureManager()
 
     private let scroll = ScrollFeature()
-    let screenshots = ScreenshotFeature()
+    let capture = CaptureFeature()
     let keyboard = KeyboardFeature()
     let windows = WindowFeature()
-    let recording = RecordingFeature()
     let tweaks = SystemTweaks()
 
     // MARK: Persisted feature state
@@ -31,10 +30,10 @@ final class FeatureManager: ObservableObject {
         }
     }
 
-    @Published var screenshotsEnabled: Bool {
+    @Published var captureEnabled: Bool {
         didSet {
-            defaults.set(screenshotsEnabled, forKey: "screenshotsEnabled")
-            apply(screenshots, enabled: screenshotsEnabled)
+            defaults.set(captureEnabled, forKey: "captureEnabled")
+            apply(capture, enabled: captureEnabled)
         }
     }
 
@@ -52,30 +51,21 @@ final class FeatureManager: ObservableObject {
         }
     }
 
-    @Published var recordingEnabled: Bool {
-        didSet {
-            defaults.set(recordingEnabled, forKey: "recordingEnabled")
-            apply(recording, enabled: recordingEnabled)
-        }
-    }
-
     private let defaults = UserDefaults.standard
 
     private init() {
         // First-launch defaults.
         if defaults.object(forKey: "scrollEnabled") == nil { defaults.set(true, forKey: "scrollEnabled") }
         if defaults.object(forKey: "invertMouse") == nil { defaults.set(true, forKey: "invertMouse") }
-        if defaults.object(forKey: "screenshotsEnabled") == nil { defaults.set(true, forKey: "screenshotsEnabled") }
+        if defaults.object(forKey: "captureEnabled") == nil { defaults.set(true, forKey: "captureEnabled") }
         // Keyboard fixes are intrusive; default off until the user opts in.
 
         // Initialise stored properties (didSet does not fire during init).
         scrollEnabled = defaults.bool(forKey: "scrollEnabled")
         invertMouse = defaults.bool(forKey: "invertMouse")
-        screenshotsEnabled = defaults.bool(forKey: "screenshotsEnabled")
+        captureEnabled = defaults.bool(forKey: "captureEnabled")
         keyboardEnabled = defaults.bool(forKey: "keyboardEnabled")
         windowsEnabled = defaults.bool(forKey: "windowsEnabled")
-        if defaults.object(forKey: "recordingEnabled") == nil { defaults.set(true, forKey: "recordingEnabled") }
-        recordingEnabled = defaults.bool(forKey: "recordingEnabled")
 
         scroll.invertMouse = invertMouse
     }
@@ -83,10 +73,9 @@ final class FeatureManager: ObservableObject {
     /// Start whatever should be running at launch.
     func bootstrap() {
         if scrollEnabled { _ = scroll.start() }
-        if screenshotsEnabled { screenshots.start() }
+        if captureEnabled { _ = capture.start() }
         if keyboardEnabled { _ = keyboard.start() }
         if windowsEnabled { _ = windows.start() }
-        if recordingEnabled { _ = recording.start() }
         // Reapply the persistent modifier swap and start its hot-plug watcher,
         // even if the event-tap part of the keyboard feature is off.
         keyboard.modifierSwap.reapplyIfEnabled()

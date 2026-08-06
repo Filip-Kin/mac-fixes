@@ -31,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateStatusIcon() {
-        let recording = features.recording.isRecording
+        let recording = features.capture.isRecording
         let name = recording ? "record.circle" : "wrench.and.screwdriver"
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "Filip's Mac Fixes")
         if recording {
@@ -56,16 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        addActionItem(menu, "Area screenshot → clipboard",
-                      shortcut: features.screenshots.areaToClipboardKeys.first,
-                      action: #selector(shotClipboard))
-        addActionItem(menu, "Area screenshot → file",
-                      shortcut: features.screenshots.areaToFileKeys.first,
-                      action: #selector(shotFile))
-
-        menu.addItem(.separator())
-
-        if features.recording.isRecording {
+        if features.capture.isRecording {
             let stop = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
             stop.target = self
             menu.addItem(stop)
@@ -73,12 +64,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             cancel.target = self
             menu.addItem(cancel)
         } else {
-            addActionItem(menu, "Record area → MP4",
-                          shortcut: features.recording.recordKeys.first,
-                          action: #selector(recordMP4))
-            let gif = NSMenuItem(title: "Record area → GIF", action: #selector(recordGIF), keyEquivalent: "")
-            gif.target = self
-            menu.addItem(gif)
+            for action in allCaptureActions where features.capture.showInMenu(action) {
+                let item = NSMenuItem(title: action.menuLabel, action: #selector(performCapture(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = action.id
+                if let combo = features.capture.shortcut(for: action).first {
+                    item.keyEquivalent = combo.appKitKeyEquivalent
+                    item.keyEquivalentModifierMask = combo.appKitModifiers
+                }
+                menu.addItem(item)
+            }
         }
 
         menu.addItem(.separator())
@@ -109,12 +104,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Actions
 
-    @objc private func shotClipboard() { features.screenshots.areaToClipboard() }
-    @objc private func shotFile() { features.screenshots.areaToFile() }
-    @objc private func recordMP4() { features.recording.record(format: .mp4) }
-    @objc private func recordGIF() { features.recording.record(format: .gif) }
-    @objc private func stopRecording() { features.recording.stopRecording() }
-    @objc private func cancelRecording() { features.recording.cancelRecording() }
+    @objc private func performCapture(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let action = allCaptureActions.first(where: { $0.id == id }) else { return }
+        features.capture.perform(action)
+    }
+    @objc private func stopRecording() { features.capture.stopRecording() }
+    @objc private func cancelRecording() { features.capture.cancelRecording() }
 
     @objc private func openSettings() {
         if settingsWindow == nil {

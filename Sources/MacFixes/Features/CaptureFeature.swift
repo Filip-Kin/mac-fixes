@@ -1,0 +1,247 @@
+import AppKit
+import Carbon.HIToolbox
+
+extension Notification.Name {
+    static let recordingStateChanged = Notification.Name("macfixes.recordingStateChanged")
+}
+
+enum CaptureTarget: String, CaseIterable, Identifiable {
+    case area, window, screen
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+}
+
+/// One cell of the Area/Window/Screen × Shot/Record × MP4/GIF matrix.
+struct CaptureAction: Identifiable, Hashable {
+    let target: CaptureTarget
+    let isRecord: Bool
+    let format: RecordingFormat?   // nil for a screenshot
+
+    var id: String { "\(target.rawValue).\(isRecord ? "rec" : "shot").\(format?.rawValue ?? "")" }
+    var rowLabel: String {
+        guard isRecord else { return "Screenshot" }
+        return format == .gif ? "Record GIF" : "Record MP4"
+    }
+    var menuLabel: String {
+        let what = isRecord ? (format == .gif ? "GIF" : "MP4") : "Screenshot"
+        return "\(target.label) → \(what)"
+    }
+}
+
+/// All nine actions (screenshot + MP4 + GIF for each target).
+let allCaptureActions: [CaptureAction] = CaptureTarget.allCases.flatMap { t in
+    [CaptureAction(target: t, isRecord: false, format: nil),
+     CaptureAction(target: t, isRecord: true, format: .mp4),
+     CaptureAction(target: t, isRecord: true, format: .gif)]
+}
+
+/// Screenshots and screen recording, unified. Each action can have its own
+/// shortcut and menu visibility; two global switches (save to file, copy to
+/// clipboard) apply to every capture.
+final class CaptureFeature: Feature, @unchecked Sendable {
+    private let selector = AreaSelector()
+    private let recorder = ScreenRecorder()
+    private let overlay = RecordingOverlay()
+    private var hotKeyIDs: [UInt32] = []
+    private let d = UserDefaults.standard
+
+    var isRecording: Bool { recorder.isRecording }
+
+    // MARK: Global settings
+
+    var saveToFile: Bool { get { d.object(forKey: "capSaveFile") as? Bool ?? true } set { d.set(newValue, forKey: "capSaveFile") } }
+    var copyToClipboard: Bool { get { d.object(forKey: "capClipboard") as? Bool ?? true } set { d.set(newValue, forKey: "capClipboard") } }
+    var showCursor: Bool { get { d.object(forKey: "capCursor") as? Bool ?? true } set { d.set(newValue, forKey: "capCursor") } }
+    var fps: Int { get { let v = d.integer(forKey: "capFPS"); return v == 0 ? 30 : v } set { d.set(newValue, forKey: "capFPS") } }
+
+    var saveLocation: URL {
+        if let p = d.string(forKey: "capDir") { return URL(fileURLWithPath: p) }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+        return docs.appendingPathComponent("Mac Fixes")
+    }
+    func setSaveLocation(_ url: URL) { d.set(url.path, forKey: "capDir") }
+
+    // MARK: Per-action config
+
+    func shortcut(for a: CaptureAction) -> [KeyCombo] {
+        if let data = d.data(forKey: "cap.\(a.id).keys"),
+           let combos = try? JSONDecoder().decode([KeyCombo].self, from: data) { return combos }
+        return Self.defaultShortcut(a)
+    }
+    func setShortcut(_ combos: [KeyCombo], for a: CaptureAction) {
+        if let data = try? JSONEncoder().encode(combos) { d.set(data, forKey: "cap.\(a.id).keys") }
+    }
+    func showInMenu(_ a: CaptureAction) -> Bool {
+        d.object(forKey: "cap.\(a.id).menu") as? Bool ?? Self.defaultShowInMenu(a)
+    }
+    func setShowInMenu(_ v: Bool, for a: CaptureAction) { d.set(v, forKey: "cap.\(a.id).menu") }
+
+    private static func defaultShortcut(_ a: CaptureAction) -> [KeyCombo] {
+        if a.target == .area, !a.isRecord {
+            return [KeyCombo(keyCode: UInt32(kVK_F13), modifiers: UInt32(cmdKey)),
+                    KeyCombo(keyCode: UInt32(kVK_F12), modifiers: UInt32(cmdKey))]
+        }
+        if a.target == .area, a.isRecord, a.format == .mp4 {
+            return [KeyCombo(keyCode: UInt32(kVK_F13), modifiers: UInt32(shiftKey | controlKey)),
+                    KeyCombo(keyCode: UInt32(kVK_F12), modifiers: UInt32(shiftKey | controlKey))]
+        }
+        return []
+    }
+    private static func defaultShowInMenu(_ a: CaptureAction) -> Bool {
+        switch a.target {
+        case .area: return true
+        case .window, .screen: return !a.isRecord   // shots yes, records off by default
+        }
+    }
+
+    // MARK: Feature lifecycle
+
+    @discardableResult
+    func start() -> Bool { registerHotKeys(); return true }
+    func stop() { hotKeyIDs.forEach { HotKeyCenter.shared.unregister($0) }; hotKeyIDs = [] }
+    func reloadHotKeys() { stop(); registerHotKeys() }
+
+    private func registerHotKeys() {
+        for a in allCaptureActions {
+            for combo in shortcut(for: a) {
+                hotKeyIDs.append(HotKeyCenter.shared.register(combo) { [weak self] in self?.perform(a) })
+            }
+        }
+    }
+
+    // MARK: Perform
+
+    func perform(_ a: CaptureAction) {
+        if a.isRecord {
+            if recorder.isRecording { stopRecording(); return }
+            performRecord(a.target, a.format ?? .mp4)
+        } else {
+            performShot(a.target)
+        }
+    }
+
+    // MARK: Screenshots (screencapture)
+
+    private func performShot(_ target: CaptureTarget) {
+        let url = destURL(prefix: "Screenshot", ext: "png")
+        var args: [String]
+        switch target {
+        case .area:   args = ["-i"]
+        case .window: args = ["-iw", "-o"]
+        case .screen: args = []
+        }
+        args += [url.path]
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        p.arguments = args
+        p.terminationHandler = { [weak self] _ in
+            DispatchQueue.main.async {
+                guard FileManager.default.fileExists(atPath: url.path) else { return }
+                self?.handleOutput(url, isImage: true)
+            }
+        }
+        try? p.run()
+    }
+
+    // MARK: Recording
+
+    private func performRecord(_ target: CaptureTarget, _ format: RecordingFormat) {
+        guard Permissions.hasScreenRecording else {
+            Permissions.requestScreenRecording()
+            Permissions.openSettings(.screenRecording)
+            return
+        }
+        switch target {
+        case .area:
+            selector.select { [weak self] rect in
+                guard let self, let rect else { return }
+                self.beginRecord(rect, format)
+            }
+        case .screen:
+            beginRecord(fullDisplayAX(), format)
+        case .window:
+            guard let win = AXWindow.frontmostWindow(), let f = AXWindow.frame(of: win) else { return }
+            beginRecord(f, format)
+        }
+    }
+
+    private func beginRecord(_ areaAX: CGRect, _ format: RecordingFormat) {
+        let dir = destURLDir()
+        let fps = self.fps, cursor = self.showCursor
+        Task {
+            do {
+                try await recorder.start(area: areaAX, format: format, fps: fps,
+                                         showsCursor: cursor, saveDir: dir)
+                await MainActor.run {
+                    self.overlay.show(areaAX: areaAX,
+                                      onStop: { self.stopRecording() },
+                                      onCancel: { self.cancelRecording() })
+                }
+                NotificationCenter.default.post(name: .recordingStateChanged, object: nil)
+            } catch {
+                NSLog("recording failed to start: \(error)")
+            }
+        }
+    }
+
+    func stopRecording() {
+        Task {
+            let url = await recorder.stop()
+            await MainActor.run { self.overlay.hide() }
+            NotificationCenter.default.post(name: .recordingStateChanged, object: nil)
+            if let url {
+                await MainActor.run {
+                    NSSound(named: "Glass")?.play()
+                    self.handleOutput(url, isImage: false)
+                }
+            }
+        }
+    }
+
+    func cancelRecording() {
+        Task {
+            await recorder.cancel()
+            await MainActor.run { self.overlay.hide() }
+            NotificationCenter.default.post(name: .recordingStateChanged, object: nil)
+        }
+    }
+
+    // MARK: Output routing
+
+    private func handleOutput(_ url: URL, isImage: Bool) {
+        guard copyToClipboard else { return }   // file already lives at `url`
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        if isImage, let img = NSImage(contentsOf: url) {
+            pb.writeObjects([img, url as NSURL])   // image for pasting, file for attaching
+        } else {
+            pb.writeObjects([url as NSURL])
+        }
+    }
+
+    // MARK: Destination
+
+    private func destURLDir() -> URL {
+        let dir = saveToFile ? saveLocation : URL(fileURLWithPath: NSTemporaryDirectory())
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+    private func destURL(prefix: String, ext: String) -> URL {
+        destURLDir().appendingPathComponent("\(prefix) \(Self.timestamp()).\(ext)")
+    }
+
+    private func fullDisplayAX() -> CGRect {
+        let screen = NSScreen.main ?? NSScreen.screens[0]
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
+        let f = screen.frame
+        return CGRect(x: f.minX, y: primaryHeight - f.maxY, width: f.width, height: f.height)
+    }
+
+    private static func timestamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return f.string(from: Date())
+    }
+}
