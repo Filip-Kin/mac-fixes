@@ -70,6 +70,28 @@ enum AXWindow {
             ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
+    /// Frames (AX / top-left coords) of normal on-screen windows that intersect
+    /// `vf`, for adaptive snapping. Excludes desktop items, our own windows, the
+    /// window being dragged, and tiny/transparent windows.
+    static func onScreenWindowFrames(excluding dragged: CGRect?, intersecting vf: CGRect) -> [CGRect] {
+        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { return [] }
+        var frames: [CGRect] = []
+        for w in info {
+            guard (w[kCGWindowLayer as String] as? Int) == 0 else { continue }          // normal windows only
+            if let a = w[kCGWindowAlpha as String] as? Double, a < 0.1 { continue }
+            if (w[kCGWindowOwnerName as String] as? String) == "Filip's Mac Fixes" { continue }
+            guard let bounds = w[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  rect.intersects(vf), rect.width >= 100, rect.height >= 100
+            else { continue }
+            if let d = dragged, abs(rect.minX - d.minX) < 6, abs(rect.minY - d.minY) < 6,
+               abs(rect.width - d.width) < 6, abs(rect.height - d.height) < 6 { continue }
+            frames.append(rect)
+        }
+        return frames
+    }
+
     // MARK: Generic attribute readers
 
     private static func value<T>(_ element: AXUIElement, _ attr: String,

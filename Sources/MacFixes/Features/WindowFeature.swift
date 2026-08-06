@@ -33,10 +33,36 @@ final class WindowFeature: Feature, @unchecked Sendable {
 
     // Sub-toggles (default true except the intrusive ones).
     var snappingEnabled: Bool { get { flag("winSnapping", true) } set { setFlag("winSnapping", newValue) } }
-    // Off by default: macOS 26's native edge-tiling already does this, and does
-    // it adaptively (fills the gap left by other windows). Only useful if you
-    // have turned macOS tiling off.
-    var dragSnapEnabled: Bool { get { flag("winDragSnap", false) } set { setFlag("winDragSnap", newValue) } }
+    // Off by default. Turning it on disables macOS's native edge-tiling (so the
+    // two don't fight) and turns it back on when disabled. Our snap is adaptive.
+    var dragSnapEnabled: Bool {
+        get { flag("winDragSnap", false) }
+        set {
+            defaults.set(newValue, forKey: "winDragSnap")
+            setNativeTiling(enabled: !newValue)
+            reload()
+        }
+    }
+
+    /// Enable or disable macOS's built-in drag-to-edge tiling.
+    private func setNativeTiling(enabled: Bool) {
+        let domain = "com.apple.WindowManager"
+        for key in ["EnableTilingByEdgeDrag", "EnableTopTilingByEdgeDrag", "EnableTilingOptionAccelerator"] {
+            if enabled {
+                run(["/usr/bin/defaults", "delete", domain, key])          // restore default (on)
+            } else {
+                run(["/usr/bin/defaults", "write", domain, key, "-bool", "false"])
+            }
+        }
+        run(["/usr/bin/killall", "WindowManager"])
+    }
+
+    private func run(_ argv: [String]) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: argv[0])
+        p.arguments = Array(argv.dropFirst())
+        try? p.run(); p.waitUntilExit()
+    }
     var closeQuitsEnabled: Bool { get { flag("winCloseQuits", false) } set { setFlag("winCloseQuits", newValue) } }
 
     private func flag(_ k: String, _ d: Bool) -> Bool { defaults.object(forKey: k) as? Bool ?? d }
@@ -154,9 +180,41 @@ final class SnapController: @unchecked Sendable {
 
         guard let pos else { pending = nil; hidePreview(); return }
         let vf = AXWindow.axVisibleFrame(screen)
-        let axTarget = pos.rect(in: vf)
+        let draggedFrame = AXWindow.focusedWindow().flatMap { AXWindow.frame(of: $0) }
+        let occupied = AXWindow.onScreenWindowFrames(excluding: draggedFrame, intersecting: vf)
+        let axTarget = Self.adaptiveTarget(pos, vf: vf, occupied: occupied)
         pending = axTarget
         showPreview(AXWindow.toBottomLeft(axTarget))
+    }
+
+    /// Fill the space left by other windows: left/right take the gap up to the
+    /// nearest opposite-side window (else half); corners take that gap width and
+    /// half the height.
+    static func adaptiveTarget(_ pos: WindowPosition, vf: CGRect, occupied: [CGRect]) -> CGRect {
+        let minW = vf.width * 0.15
+        let rightBoundary = occupied
+            .filter { $0.midX > vf.midX && $0.height > vf.height * 0.4 }
+            .map(\.minX).min() ?? vf.midX
+        let leftBoundary = occupied
+            .filter { $0.midX < vf.midX && $0.height > vf.height * 0.4 }
+            .map(\.maxX).max() ?? vf.midX
+
+        switch pos {
+        case .maximize:
+            return vf
+        case .leftHalf, .topLeft, .bottomLeft:
+            let w = max(minW, min(rightBoundary - vf.minX, vf.width))
+            let h = pos == .leftHalf ? vf.height : vf.height / 2
+            let y = pos == .bottomLeft ? vf.midY : vf.minY
+            return CGRect(x: vf.minX, y: y, width: w, height: h)
+        case .rightHalf, .topRight, .bottomRight:
+            let w = max(minW, min(vf.maxX - leftBoundary, vf.width))
+            let h = pos == .rightHalf ? vf.height : vf.height / 2
+            let y = pos == .bottomRight ? vf.midY : vf.minY
+            return CGRect(x: vf.maxX - w, y: y, width: w, height: h)
+        default:
+            return pos.rect(in: vf)
+        }
     }
 
     private func mouseUp() {
