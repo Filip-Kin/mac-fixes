@@ -181,7 +181,7 @@ final class SnapController: @unchecked Sendable {
 
         guard let pos else { pending = nil; pendingWindow = nil; hidePreview(); return }
         let vf = AXWindow.axVisibleFrame(screen)
-        let win = AXWindow.focusedWindow()
+        let win = AXWindow.frontmostWindow()
         let draggedFrame = win.flatMap { AXWindow.frame(of: $0) }
         let occupied = AXWindow.onScreenWindowFrames(excluding: draggedFrame, intersecting: vf)
         let axTarget = Self.adaptiveTarget(pos, vf: vf, occupied: occupied)

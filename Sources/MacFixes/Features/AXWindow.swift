@@ -23,6 +23,24 @@ enum AXWindow {
         return (winElement as! AXUIElement)
     }
 
+    /// The frontmost app's focused window. More reliable than the system-wide
+    /// focused-application query during a drag (which can return nil).
+    static func frontmostWindow() -> AXUIElement? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var winRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+           let win = winRef, CFGetTypeID(win) == AXUIElementGetTypeID() {
+            return (win as! AXUIElement)
+        }
+        var winsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &winsRef) == .success,
+           let arr = winsRef as? [AXUIElement], let first = arr.first {
+            return first
+        }
+        return nil
+    }
+
     static func frame(of window: AXUIElement) -> CGRect? {
         guard let pos = value(window, kAXPositionAttribute, .cgPoint, CGPoint.self),
               let size = value(window, kAXSizeAttribute, .cgSize, CGSize.self)
