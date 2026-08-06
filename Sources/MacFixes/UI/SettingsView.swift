@@ -211,6 +211,11 @@ private struct WindowsPane: View {
                        get: { win.dragSnapEnabled }, set: { win.dragSnapEnabled = $0 })
                 toggle("Drag the divider between two snapped windows to resize both",
                        get: { win.dividerResizeEnabled }, set: { win.dividerResizeEnabled = $0 })
+                toggle("Focus the window under the cursor (hover to focus)",
+                       get: { win.focusFollowsEnabled }, set: { win.focusFollowsEnabled = $0 })
+                toggle("…and bring it to the front",
+                       get: { win.focusRaises }, set: { win.focusRaises = $0 })
+                    .padding(.leading, 20)
                 toggle("Closing the last window quits the app",
                        get: { win.closeQuitsEnabled }, set: { win.closeQuitsEnabled = $0 })
             }
