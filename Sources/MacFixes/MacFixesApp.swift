@@ -6,11 +6,10 @@ struct MacFixesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        // The window shown by the status-menu "Settings…" item and ⌘,.
-        Settings {
-            SettingsView(features: FeatureManager.shared)
-                .frame(width: 720, height: 480)
-        }
+        // The real settings window is an AppKit NSWindow managed by the
+        // delegate (reliable for a menu-bar-only app); this scene is a
+        // placeholder to satisfy the App protocol.
+        Settings { EmptyView() }
     }
 }
 
@@ -19,6 +18,7 @@ struct MacFixesApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
+    private var settingsWindow: NSWindow?
     private var features: FeatureManager { .shared }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -88,10 +88,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleInvert() { features.invertMouse.toggle() }
 
     @objc private func openSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        // macOS 14+ selector; fall back to the older name just in case.
-        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        if settingsWindow == nil {
+            let host = NSHostingController(rootView: SettingsView(features: features))
+            let window = NSWindow(contentViewController: host)
+            window.title = "Filip's Mac Fixes"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.setContentSize(NSSize(width: 720, height: 480))
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
         }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 }
