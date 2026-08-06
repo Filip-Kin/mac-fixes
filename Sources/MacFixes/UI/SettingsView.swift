@@ -4,6 +4,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case scroll = "Scroll"
     case screenshots = "Screenshots"
     case keyboard = "Keyboard"
+    case windows = "Windows"
     case tweaks = "System Tweaks"
     case permissions = "Permissions"
     case about = "About"
@@ -14,6 +15,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .scroll: return "computermouse"
         case .screenshots: return "camera.viewfinder"
         case .keyboard: return "keyboard"
+        case .windows: return "macwindow"
         case .tweaks: return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .about: return "info.circle"
@@ -38,6 +40,7 @@ struct SettingsView: View {
                     case .scroll: ScrollPane(features: features)
                     case .screenshots: ScreenshotPane(features: features)
                     case .keyboard: KeyboardPane(features: features)
+                    case .windows: WindowsPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
                     case .about: AboutPane()
@@ -152,7 +155,7 @@ private struct KeyboardPane: View {
                            get: { kb.docNavEnabled }, set: { kb.docNavEnabled = $0 })
                 ruleToggle("Ctrl + Backspace deletes the previous word",
                            get: { kb.wordDeleteEnabled }, set: { kb.wordDeleteEnabled = $0 })
-                ruleToggle("Tap the bottom-left key alone to open a launcher",
+                ruleToggle("Tap a modifier key alone to open a launcher",
                            get: { kb.tapToLaunchEnabled }, set: { kb.tapToLaunchEnabled = $0 })
             }
             .disabled(!features.keyboardEnabled)
@@ -184,6 +187,44 @@ private struct KeyboardPane: View {
 
     private func ruleToggle(_ label: String, get: @escaping @Sendable () -> Bool,
                             set: @escaping @Sendable (Bool) -> Void) -> some View {
+        Toggle(label, isOn: Binding(get: get, set: { set($0); refresh.toggle() }))
+    }
+}
+
+private struct WindowsPane: View {
+    @ObservedObject var features: FeatureManager
+    @State private var refresh = false
+
+    var body: some View {
+        let win = features.windows
+        VStack(alignment: .leading, spacing: 16) {
+            PaneHeader("Windows", "Snapping, maximize, and Windows-like window controls.")
+            Toggle("Enable window management", isOn: $features.windowsEnabled)
+
+            Group {
+                toggle("Snap & maximize keyboard shortcuts",
+                       get: { win.snappingEnabled }, set: { win.snappingEnabled = $0 })
+                toggle("Drag a window to a screen edge to snap it",
+                       get: { win.dragSnapEnabled }, set: { win.dragSnapEnabled = $0 })
+                toggle("Closing the last window quits the app",
+                       get: { win.closeQuitsEnabled }, set: { win.closeQuitsEnabled = $0 })
+                toggle("Green button maximizes instead of full screen (best-effort)",
+                       get: { win.greenMaximizeEnabled }, set: { win.greenMaximizeEnabled = $0 })
+            }
+            .disabled(!features.windowsEnabled)
+
+            Divider()
+            Text("Keyboard shortcuts (Control + Option):").fontWeight(.medium)
+            Text("Maximize ⌃⌥↩  ·  Halves ⌃⌥ ← → ↑ ↓  ·  Quarters ⌃⌥ U I J K  ·  Centre ⌃⌥ C")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Drag a window against the left/right edge to take that half, a corner for a quarter, or the top to maximize.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        .id(refresh)
+    }
+
+    private func toggle(_ label: String, get: @escaping @Sendable () -> Bool,
+                        set: @escaping @Sendable (Bool) -> Void) -> some View {
         Toggle(label, isOn: Binding(get: get, set: { set($0); refresh.toggle() }))
     }
 }

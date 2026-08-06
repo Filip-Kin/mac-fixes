@@ -10,6 +10,7 @@ final class FeatureManager: ObservableObject {
     private let scroll = ScrollFeature()
     let screenshots = ScreenshotFeature()
     let keyboard = KeyboardFeature()
+    let windows = WindowFeature()
     let tweaks = SystemTweaks()
 
     // MARK: Persisted feature state
@@ -43,6 +44,13 @@ final class FeatureManager: ObservableObject {
         }
     }
 
+    @Published var windowsEnabled: Bool {
+        didSet {
+            defaults.set(windowsEnabled, forKey: "windowsEnabled")
+            apply(windows, enabled: windowsEnabled)
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -57,6 +65,7 @@ final class FeatureManager: ObservableObject {
         invertMouse = defaults.bool(forKey: "invertMouse")
         screenshotsEnabled = defaults.bool(forKey: "screenshotsEnabled")
         keyboardEnabled = defaults.bool(forKey: "keyboardEnabled")
+        windowsEnabled = defaults.bool(forKey: "windowsEnabled")
 
         scroll.invertMouse = invertMouse
     }
@@ -66,6 +75,7 @@ final class FeatureManager: ObservableObject {
         if scrollEnabled { _ = scroll.start() }
         if screenshotsEnabled { screenshots.start() }
         if keyboardEnabled { _ = keyboard.start() }
+        if windowsEnabled { _ = windows.start() }
         // Reapply the persistent modifier swap and start its hot-plug watcher,
         // even if the event-tap part of the keyboard feature is off.
         keyboard.modifierSwap.reapplyIfEnabled()

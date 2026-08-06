@@ -1,0 +1,86 @@
+import AppKit
+import ApplicationServices
+
+/// Accessibility helpers for moving and resizing windows.
+///
+/// The AX coordinate space has its origin at the top-left of the primary
+/// display with Y increasing downward, while NSScreen uses a bottom-left
+/// origin — so screen frames are flipped before use.
+enum AXWindow {
+
+    static func focusedWindow() -> AXUIElement? {
+        let system = AXUIElementCreateSystemWide()
+        var appRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedApplicationAttribute as CFString, &appRef) == .success,
+              let appElement = appRef, CFGetTypeID(appElement) == AXUIElementGetTypeID()
+        else { return nil }
+        let app = appElement as! AXUIElement
+
+        var winRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+              let winElement = winRef, CFGetTypeID(winElement) == AXUIElementGetTypeID()
+        else { return nil }
+        return (winElement as! AXUIElement)
+    }
+
+    static func frame(of window: AXUIElement) -> CGRect? {
+        guard let pos = value(window, kAXPositionAttribute, .cgPoint, CGPoint.self),
+              let size = value(window, kAXSizeAttribute, .cgSize, CGSize.self)
+        else { return nil }
+        return CGRect(origin: pos, size: size)
+    }
+
+    static func setFrame(_ window: AXUIElement, _ rect: CGRect) {
+        var pos = rect.origin
+        if let posValue = AXValueCreate(.cgPoint, &pos) {
+            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
+        }
+        var size = rect.size
+        if let sizeValue = AXValueCreate(.cgSize, &size) {
+            AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
+        }
+        // Set position again — some apps clamp the first move against the old size.
+        if let posValue = AXValueCreate(.cgPoint, &pos) {
+            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
+        }
+    }
+
+    // MARK: Coordinate conversion
+
+    private static var primaryHeight: CGFloat {
+        NSScreen.screens.first?.frame.height ?? 0
+    }
+
+    /// A screen's usable area (minus menu bar and Dock) in AX coordinates.
+    static func axVisibleFrame(_ screen: NSScreen) -> CGRect {
+        let vf = screen.visibleFrame
+        return CGRect(x: vf.minX, y: primaryHeight - vf.maxY, width: vf.width, height: vf.height)
+    }
+
+    /// Convert an AX (top-left origin) rect to NSScreen (bottom-left) coords.
+    static func toBottomLeft(_ axRect: CGRect) -> CGRect {
+        CGRect(x: axRect.minX, y: primaryHeight - axRect.maxY,
+               width: axRect.width, height: axRect.height)
+    }
+
+    /// The screen containing an AX rect (by its centre); falls back to main.
+    static func screen(forAX rect: CGRect) -> NSScreen {
+        let centreBottomLeft = CGPoint(x: rect.midX, y: primaryHeight - rect.midY)
+        return NSScreen.screens.first { $0.frame.contains(centreBottomLeft) }
+            ?? NSScreen.main ?? NSScreen.screens[0]
+    }
+
+    // MARK: Generic attribute readers
+
+    private static func value<T>(_ element: AXUIElement, _ attr: String,
+                                 _ type: AXValueType, _ as: T.Type) -> T? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attr as CFString, &ref) == .success,
+              let value = ref, CFGetTypeID(value) == AXValueGetTypeID()
+        else { return nil }
+        let out = UnsafeMutablePointer<T>.allocate(capacity: 1)
+        defer { out.deallocate() }
+        if AXValueGetValue(value as! AXValue, type, out) { return out.pointee }
+        return nil
+    }
+}

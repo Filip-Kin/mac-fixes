@@ -79,7 +79,11 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
     var wordJumpEnabled: Bool { get { flag("kbWordJump") } set { setFlag("kbWordJump", newValue) } }
     var docNavEnabled: Bool   { get { flag("kbDocNav") } set { setFlag("kbDocNav", newValue) } }
     var wordDeleteEnabled: Bool { get { flag("kbWordDelete") } set { setFlag("kbWordDelete", newValue) } }
-    var tapToLaunchEnabled: Bool { get { flag("kbTapLaunch") } set { setFlag("kbTapLaunch", newValue) } }
+    // Off by default (fn/Globe tap detection is unreliable on some hardware).
+    var tapToLaunchEnabled: Bool {
+        get { defaults.object(forKey: "kbTapLaunch") as? Bool ?? false }
+        set { setFlag("kbTapLaunch", newValue) }
+    }
 
     var launchTrigger: LaunchTrigger {
         get { LaunchTrigger(rawValue: defaults.string(forKey: "kbLaunchTrigger") ?? "") ?? .command }
@@ -237,6 +241,16 @@ private func keyboardCallback(proxy: CGEventTapProxy,
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         feature.reenable()
         return Unmanaged.passUnretained(event)
+    }
+
+    // The Globe/fn key emits its own key event (keycode 179 on this hardware)
+    // in addition to the secondaryFn modifier. That key event is unbound and
+    // beeps, so swallow it when Globe is the launch trigger. The launch itself
+    // fires from the secondaryFn modifier in handleFlags.
+    if (type == .keyDown || type == .keyUp),
+       feature.tapToLaunch, feature.trigger == .globe,
+       event.getIntegerValueField(.keyboardEventKeycode) == 179 {
+        return nil
     }
 
     switch type {
