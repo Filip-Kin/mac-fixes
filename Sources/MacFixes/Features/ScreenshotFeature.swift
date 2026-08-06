@@ -35,8 +35,8 @@ final class ScreenshotFeature: Feature {
     /// Each action can have several shortcuts, so one key works on the external
     /// keyboard (Print Screen == F13) and another on the built-in (no F13).
     static let defaultAreaToClipboard = [
-        KeyCombo(keyCode: UInt32(kVK_F13), modifiers: UInt32(controlKey)),  // ⌃+PrintScreen (external)
-        KeyCombo(keyCode: UInt32(kVK_F12), modifiers: UInt32(controlKey)),  // ⌃F12 (built-in, needs Fn)
+        KeyCombo(keyCode: UInt32(kVK_F13), modifiers: UInt32(cmdKey)),  // ⌘+PrintScreen (external)
+        KeyCombo(keyCode: UInt32(kVK_F12), modifiers: UInt32(cmdKey)),  // ⌘F12 (built-in)
     ]
     static let defaultAreaToFile = [
         KeyCombo(keyCode: UInt32(kVK_ANSI_5), modifiers: UInt32(cmdKey | controlKey)),

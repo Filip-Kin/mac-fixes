@@ -89,7 +89,7 @@ private struct ScreenshotPane: View {
                              combos: shot.areaToFileKeys) { new in
                 shot.areaToFileKeys = new; shot.reloadHotKeys(); refresh.toggle()
             }
-            Text("Print Screen registers as F13. On the built-in keyboard F12 is Volume Up, so ⌃F12 needs Fn held (or enable ‘Use F1, F2 as standard function keys’).")
+            Text("Print Screen registers as F13. On the built-in keyboard F12 is Volume Up, so ⌘F12 needs Fn held unless you enable the ‘F-keys act as standard function keys’ tweak.")
                 .font(.callout).foregroundStyle(.secondary)
 
             Divider()

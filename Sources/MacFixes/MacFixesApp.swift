@@ -4,24 +4,94 @@ import AppKit
 @main
 struct MacFixesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var features = FeatureManager.shared
 
     var body: some Scene {
-        MenuBarExtra("Filip's Mac Fixes", systemImage: "wrench.and.screwdriver") {
-            MenuBarContent(features: features)
+        // The window shown by the status-menu "Settings…" item and ⌘,.
+        Settings {
+            SettingsView(features: FeatureManager.shared)
+                .frame(width: 720, height: 480)
         }
-
-        Window("Filip's Mac Fixes", id: "settings") {
-            SettingsView(features: features)
-        }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 720, height: 480)
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+/// Owns the menu-bar status item (AppKit, so shortcuts render natively) and
+/// starts the feature modules.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private var statusItem: NSStatusItem!
+    private var features: FeatureManager { .shared }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar only, no dock icon
-        FeatureManager.shared.bootstrap()
+        features.bootstrap()
+        setupStatusItem()
+    }
+
+    private func setupStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.image = NSImage(systemSymbolName: "wrench.and.screwdriver",
+                                           accessibilityDescription: "Filip's Mac Fixes")
+        let menu = NSMenu()
+        menu.delegate = self          // menuNeedsUpdate rebuilds it fresh each open
+        statusItem.menu = menu
+    }
+
+    // Rebuild on every open so shortcut hints and the toggle state stay current.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        addActionItem(menu, "Area screenshot → clipboard",
+                      shortcut: features.screenshots.areaToClipboardKeys.first,
+                      action: #selector(shotClipboard))
+        addActionItem(menu, "Area screenshot → file",
+                      shortcut: features.screenshots.areaToFileKeys.first,
+                      action: #selector(shotFile))
+
+        menu.addItem(.separator())
+
+        let invert = NSMenuItem(title: "Invert mouse wheel",
+                                action: #selector(toggleInvert), keyEquivalent: "")
+        invert.target = self
+        invert.state = features.invertMouse ? .on : .off
+        menu.addItem(invert)
+
+        menu.addItem(.separator())
+
+        let settings = NSMenuItem(title: "Settings…",
+                                  action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+
+        let quit = NSMenuItem(title: "Quit Filip's Mac Fixes",
+                              action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(quit)
+    }
+
+    /// A menu item whose shortcut is shown the native way (gray, right-aligned)
+    /// via keyEquivalent. Status-menu key equivalents are display-only, so this
+    /// does not double-fire with the global Carbon hotkey.
+    private func addActionItem(_ menu: NSMenu, _ title: String,
+                               shortcut: KeyCombo?, action: Selector) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        if let shortcut {
+            item.keyEquivalent = shortcut.appKitKeyEquivalent
+            item.keyEquivalentModifierMask = shortcut.appKitModifiers
+        }
+        menu.addItem(item)
+    }
+
+    // MARK: Actions
+
+    @objc private func shotClipboard() { features.screenshots.areaToClipboard() }
+    @objc private func shotFile() { features.screenshots.areaToFile() }
+    @objc private func toggleInvert() { features.invertMouse.toggle() }
+
+    @objc private func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        // macOS 14+ selector; fall back to the older name just in case.
+        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
     }
 }

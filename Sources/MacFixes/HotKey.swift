@@ -50,6 +50,42 @@ struct KeyCombo: Codable, Equatable {
     }
 }
 
+extension KeyCombo {
+    /// Modifier flags in AppKit form (for NSMenuItem display).
+    var appKitModifiers: NSEvent.ModifierFlags {
+        var m: NSEvent.ModifierFlags = []
+        if modifiers & UInt32(cmdKey)     != 0 { m.insert(.command) }
+        if modifiers & UInt32(optionKey)  != 0 { m.insert(.option) }
+        if modifiers & UInt32(controlKey) != 0 { m.insert(.control) }
+        if modifiers & UInt32(shiftKey)   != 0 { m.insert(.shift) }
+        return m
+    }
+
+    /// The key-equivalent string AppKit renders natively (e.g. F13 → "F13").
+    var appKitKeyEquivalent: String {
+        if let f = KeyCombo.functionNumber(Int(keyCode)) {
+            // NSF1FunctionKey == 0xF704; the F-keys are sequential from there.
+            return String(UnicodeScalar(0xF704 + (f - 1))!)
+        }
+        switch Int(keyCode) {
+        case kVK_Space:  return " "
+        case kVK_Return: return "\r"
+        case kVK_Escape: return "\u{1b}"
+        default:         return KeyCombo.keyName(keyCode).lowercased()
+        }
+    }
+
+    static func functionNumber(_ code: Int) -> Int? {
+        let map: [Int: Int] = [
+            kVK_F1: 1, kVK_F2: 2, kVK_F3: 3, kVK_F4: 4, kVK_F5: 5, kVK_F6: 6,
+            kVK_F7: 7, kVK_F8: 8, kVK_F9: 9, kVK_F10: 10, kVK_F11: 11, kVK_F12: 12,
+            kVK_F13: 13, kVK_F14: 14, kVK_F15: 15, kVK_F16: 16, kVK_F17: 17,
+            kVK_F18: 18, kVK_F19: 19, kVK_F20: 20,
+        ]
+        return map[code]
+    }
+}
+
 /// Registers global hotkeys via Carbon. No Accessibility permission needed.
 final class HotKeyCenter {
     // Only touched on the main run loop (register + Carbon's event handler).
