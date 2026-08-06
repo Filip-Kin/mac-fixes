@@ -162,7 +162,9 @@ private struct KeyboardPane: View {
                 Spacer()
                 Picker("", selection: Binding(
                     get: { kb.launchTrigger }, set: { kb.launchTrigger = $0; refresh.toggle() })) {
-                    ForEach(KeyboardFeature.LaunchTrigger.allCases) { Text($0.label).tag($0) }
+                    ForEach(KeyboardFeature.LaunchTrigger.allCases) {
+                        Text($0.label(windowsStyle: kb.swapModifiers)).tag($0)
+                    }
                 }
                 .labelsHidden().frame(width: 200)
             }

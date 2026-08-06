@@ -36,6 +36,18 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
             case .globe:   return "Globe (🌐)"
             }
         }
+
+        /// Windows-keyboard names, used when the Windows-style swap is on.
+        func label(windowsStyle: Bool) -> String {
+            guard windowsStyle else { return label }
+            switch self {
+            case .command: return "Ctrl (⌘)"
+            case .control: return "Control (⌃)"
+            case .option:  return "Alt (⌥)"
+            case .shift:   return "Shift (⇧)"
+            case .globe:   return "Windows key (🌐)"
+            }
+        }
         var mask: CGEventFlags {
             switch self {
             case .command: return .maskCommand
