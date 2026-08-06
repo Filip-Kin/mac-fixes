@@ -2,9 +2,8 @@ import SwiftUI
 import Carbon.HIToolbox
 import AppKit
 
-/// A labelled row that shows a hotkey and lets you re-record it.
-struct HotKeyRow: View {
-    let label: String
+/// A button that shows a hotkey and re-records it when clicked.
+struct HotKeyButton: View {
     let combo: KeyCombo
     let onChange: (KeyCombo) -> Void
 
@@ -12,25 +11,22 @@ struct HotKeyRow: View {
     @State private var monitor: Any?
 
     var body: some View {
-        HStack {
-            Text(label)
-            Spacer()
-            Button(recording ? "Press keys…" : combo.display) {
-                recording ? stop() : record()
-            }
-            .frame(minWidth: 120)
-            .buttonStyle(.bordered)
-            .tint(recording ? .accentColor : nil)
+        Button(recording ? "Press keys…" : combo.display) {
+            recording ? stop() : record()
         }
+        .frame(minWidth: 120)
+        .buttonStyle(.bordered)
+        .tint(recording ? .accentColor : nil)
         .onDisappear { stop() }
     }
 
     private func record() {
         recording = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let mods = Self.carbonFlags(event.modifierFlags)
-            // Require at least one modifier so we don't grab plain typing.
-            guard mods != 0 else { return event }
+            let mods = HotKeyButton.carbonFlags(event.modifierFlags)
+            // Function keys (F13 etc) are fine with no modifier; otherwise require one.
+            let isFunctionKey = event.keyCode >= 0x60 && event.keyCode <= 0x6F
+            guard mods != 0 || isFunctionKey else { return event }
             onChange(KeyCombo(keyCode: UInt32(event.keyCode), modifiers: mods))
             stop()
             return nil
@@ -49,5 +45,40 @@ struct HotKeyRow: View {
         if ns.contains(.control) { f |= UInt32(controlKey) }
         if ns.contains(.shift)   { f |= UInt32(shiftKey) }
         return f
+    }
+}
+
+/// An editable list of shortcuts for one action (add / remove / re-record).
+struct HotKeyListEditor: View {
+    let label: String
+    let combos: [KeyCombo]
+    let onChange: ([KeyCombo]) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).fontWeight(.medium)
+            ForEach(Array(combos.enumerated()), id: \.offset) { idx, combo in
+                HStack {
+                    HotKeyButton(combo: combo) { new in
+                        var c = combos; c[idx] = new; onChange(c)
+                    }
+                    Button {
+                        var c = combos; c.remove(at: idx); onChange(c)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(combos.count <= 1)
+                    Spacer()
+                }
+            }
+            Button {
+                onChange(combos + [KeyCombo(keyCode: UInt32(kVK_F13),
+                                            modifiers: UInt32(controlKey))])
+            } label: {
+                Label("Add shortcut", systemImage: "plus")
+            }
+            .buttonStyle(.borderless)
+        }
     }
 }

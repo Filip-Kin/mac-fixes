@@ -81,14 +81,16 @@ private struct ScreenshotPane: View {
 
             Divider()
 
-            HotKeyRow(label: "Area → Clipboard",
-                      combo: shot.areaToClipboardKey) { new in
-                shot.areaToClipboardKey = new; shot.reloadHotKeys(); refresh.toggle()
+            HotKeyListEditor(label: "Area → Clipboard",
+                             combos: shot.areaToClipboardKeys) { new in
+                shot.areaToClipboardKeys = new; shot.reloadHotKeys(); refresh.toggle()
             }
-            HotKeyRow(label: "Area → File",
-                      combo: shot.areaToFileKey) { new in
-                shot.areaToFileKey = new; shot.reloadHotKeys(); refresh.toggle()
+            HotKeyListEditor(label: "Area → File",
+                             combos: shot.areaToFileKeys) { new in
+                shot.areaToFileKeys = new; shot.reloadHotKeys(); refresh.toggle()
             }
+            Text("Print Screen registers as F13. On the built-in keyboard F12 is Volume Up, so ⌃F12 needs Fn held (or enable ‘Use F1, F2 as standard function keys’).")
+                .font(.callout).foregroundStyle(.secondary)
 
             Divider()
 

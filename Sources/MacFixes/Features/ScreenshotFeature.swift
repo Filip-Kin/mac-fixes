@@ -32,18 +32,23 @@ final class ScreenshotFeature: Feature {
 
     // MARK: Hotkeys (persisted, with defaults)
 
-    static let defaultAreaToClipboard = KeyCombo(keyCode: UInt32(kVK_ANSI_4),
-                                                 modifiers: UInt32(cmdKey | controlKey))
-    static let defaultAreaToFile = KeyCombo(keyCode: UInt32(kVK_ANSI_5),
-                                            modifiers: UInt32(cmdKey | controlKey))
+    /// Each action can have several shortcuts, so one key works on the external
+    /// keyboard (Print Screen == F13) and another on the built-in (no F13).
+    static let defaultAreaToClipboard = [
+        KeyCombo(keyCode: UInt32(kVK_F13), modifiers: UInt32(controlKey)),  // ⌃+PrintScreen (external)
+        KeyCombo(keyCode: UInt32(kVK_F12), modifiers: UInt32(controlKey)),  // ⌃F12 (built-in, needs Fn)
+    ]
+    static let defaultAreaToFile = [
+        KeyCombo(keyCode: UInt32(kVK_ANSI_5), modifiers: UInt32(cmdKey | controlKey)),
+    ]
 
-    var areaToClipboardKey: KeyCombo {
-        get { load("keyAreaClipboard") ?? Self.defaultAreaToClipboard }
-        set { save(newValue, "keyAreaClipboard") }
+    var areaToClipboardKeys: [KeyCombo] {
+        get { loadArray("keysAreaClipboard") ?? Self.defaultAreaToClipboard }
+        set { saveArray(newValue, "keysAreaClipboard") }
     }
-    var areaToFileKey: KeyCombo {
-        get { load("keyAreaFile") ?? Self.defaultAreaToFile }
-        set { save(newValue, "keyAreaFile") }
+    var areaToFileKeys: [KeyCombo] {
+        get { loadArray("keysAreaFile") ?? Self.defaultAreaToFile }
+        set { saveArray(newValue, "keysAreaFile") }
     }
 
     // MARK: Feature lifecycle
@@ -66,12 +71,16 @@ final class ScreenshotFeature: Feature {
     }
 
     private func registerHotKeys() {
-        hotKeyIDs.append(HotKeyCenter.shared.register(areaToClipboardKey) { [weak self] in
-            self?.areaToClipboard()
-        })
-        hotKeyIDs.append(HotKeyCenter.shared.register(areaToFileKey) { [weak self] in
-            self?.areaToFile()
-        })
+        for combo in areaToClipboardKeys {
+            hotKeyIDs.append(HotKeyCenter.shared.register(combo) { [weak self] in
+                self?.areaToClipboard()
+            })
+        }
+        for combo in areaToFileKeys {
+            hotKeyIDs.append(HotKeyCenter.shared.register(combo) { [weak self] in
+                self?.areaToFile()
+            })
+        }
     }
 
     // MARK: Actions
@@ -104,12 +113,12 @@ final class ScreenshotFeature: Feature {
 
     // MARK: Persistence helpers
 
-    private func load(_ key: String) -> KeyCombo? {
+    private func loadArray(_ key: String) -> [KeyCombo]? {
         guard let data = defaults.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(KeyCombo.self, from: data)
+        return try? JSONDecoder().decode([KeyCombo].self, from: data)
     }
-    private func save(_ combo: KeyCombo, _ key: String) {
-        if let data = try? JSONEncoder().encode(combo) { defaults.set(data, forKey: key) }
+    private func saveArray(_ combos: [KeyCombo], _ key: String) {
+        if let data = try? JSONEncoder().encode(combos) { defaults.set(data, forKey: key) }
     }
 
     private static func timestamp() -> String {
