@@ -35,9 +35,15 @@ Planned (see the roadmap below):
 Requires the Swift toolchain (Xcode or Command Line Tools).
 
 ```
+./setup-signing.sh   # once: creates a self-signed identity so permission grants survive rebuilds
 ./build.sh
 open "/Applications/Filip's Mac Fixes.app"
 ```
+
+`setup-signing.sh` is optional but recommended. Without it the app is ad-hoc
+signed, and macOS forgets the Accessibility / Screen Recording grants every
+time you rebuild, re-prompting you. The one-time setup asks for your login
+password to trust the certificate.
 
 `build.sh` compiles a release build, assembles the `.app`, ad-hoc signs it, and
 installs it to `/Applications`. The app is a menu-bar item with no Dock icon.

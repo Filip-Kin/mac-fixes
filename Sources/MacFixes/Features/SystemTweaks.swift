@@ -156,5 +156,17 @@ final class SystemTweaks: ObservableObject {
                 ["defaults", "delete", "-g", "ApplePressAndHoldEnabled"],
             ],
             needsRelogin: true),
+
+        Tweak(
+            id: "fn-keys-standard",
+            title: "Keyboard: F-keys act as standard function keys",
+            detail: "Makes F1–F12 behave as plain function keys (so ⌃F12 works without Fn); media keys then need Fn held.",
+            applyCommands: [
+                ["defaults", "write", "-g", "com.apple.keyboard.fnState", "-bool", "true"],
+            ],
+            resetCommands: [
+                ["defaults", "delete", "-g", "com.apple.keyboard.fnState"],
+            ],
+            needsRelogin: true),
     ]
 }

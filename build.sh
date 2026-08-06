@@ -41,8 +41,17 @@ cat > "$BUILD/$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "Ad-hoc signing..."
-codesign --force --deep --sign - "$BUILD/$APP"
+# Sign with a stable self-signed identity if it exists (run ./setup-signing.sh
+# once to create it), so macOS keeps Accessibility / Screen Recording grants
+# across rebuilds. Otherwise fall back to ad-hoc, which re-prompts each rebuild.
+CERT_NAME="MacFixes Self-Signed"
+if security find-identity -v -p codesigning | grep -qF "$CERT_NAME"; then
+    echo "Signing with $CERT_NAME..."
+    codesign --force --deep --sign "$CERT_NAME" --identifier "$BUNDLE_ID" "$BUILD/$APP"
+else
+    echo "Ad-hoc signing (run ./setup-signing.sh once so permissions persist across rebuilds)."
+    codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$BUILD/$APP"
+fi
 
 echo "Installing to /Applications..."
 rm -rf "/Applications/$APP"
