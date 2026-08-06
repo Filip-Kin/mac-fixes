@@ -204,18 +204,19 @@ private struct WindowsPane: View {
             Group {
                 toggle("Snap & maximize keyboard shortcuts",
                        get: { win.snappingEnabled }, set: { win.snappingEnabled = $0 })
-                toggle("Drag a window to a screen edge to snap it",
+                toggle("Drag a window to a screen edge to snap it (fixed halves)",
                        get: { win.dragSnapEnabled }, set: { win.dragSnapEnabled = $0 })
                 toggle("Closing the last window quits the app",
                        get: { win.closeQuitsEnabled }, set: { win.closeQuitsEnabled = $0 })
             }
             .disabled(!features.windowsEnabled)
 
+            Text("macOS 26 already tiles windows when you drag them to an edge, and does it adaptively (fills the space left by other windows). Leave the drag option off unless you have turned macOS tiling off in System Settings → Desktop & Dock.")
+                .font(.callout).foregroundStyle(.secondary)
+
             Divider()
             Text("Keyboard shortcuts (Control + Option):").fontWeight(.medium)
             Text("Maximize ⌃⌥↩  ·  Halves ⌃⌥ ← → ↑ ↓  ·  Quarters ⌃⌥ U I J K  ·  Centre ⌃⌥ C")
-                .font(.callout).foregroundStyle(.secondary)
-            Text("Drag a window against the left/right edge to take that half, a corner for a quarter, or the top to maximize.")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .id(refresh)

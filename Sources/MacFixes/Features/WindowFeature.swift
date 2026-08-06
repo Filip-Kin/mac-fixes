@@ -33,7 +33,10 @@ final class WindowFeature: Feature, @unchecked Sendable {
 
     // Sub-toggles (default true except the intrusive ones).
     var snappingEnabled: Bool { get { flag("winSnapping", true) } set { setFlag("winSnapping", newValue) } }
-    var dragSnapEnabled: Bool { get { flag("winDragSnap", true) } set { setFlag("winDragSnap", newValue) } }
+    // Off by default: macOS 26's native edge-tiling already does this, and does
+    // it adaptively (fills the gap left by other windows). Only useful if you
+    // have turned macOS tiling off.
+    var dragSnapEnabled: Bool { get { flag("winDragSnap", false) } set { setFlag("winDragSnap", newValue) } }
     var closeQuitsEnabled: Bool { get { flag("winCloseQuits", false) } set { setFlag("winCloseQuits", newValue) } }
 
     private func flag(_ k: String, _ d: Bool) -> Bool { defaults.object(forKey: k) as? Bool ?? d }
