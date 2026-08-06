@@ -206,6 +206,8 @@ private struct WindowsPane: View {
                        get: { win.snappingEnabled }, set: { win.snappingEnabled = $0 })
                 toggle("Drag a window to a screen edge to snap it (adaptive)",
                        get: { win.dragSnapEnabled }, set: { win.dragSnapEnabled = $0 })
+                toggle("Drag the divider between two snapped windows to resize both",
+                       get: { win.dividerResizeEnabled }, set: { win.dividerResizeEnabled = $0 })
                 toggle("Closing the last window quits the app",
                        get: { win.closeQuitsEnabled }, set: { win.closeQuitsEnabled = $0 })
             }

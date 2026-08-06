@@ -30,6 +30,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
     private var hotKeyIDs: [UInt32] = []
     private let snapper = SnapController()
     private let observers = WindowObservers()
+    private let seams = SeamResizer()
 
     // Sub-toggles (default true except the intrusive ones).
     var snappingEnabled: Bool { get { flag("winSnapping", true) } set { setFlag("winSnapping", newValue) } }
@@ -64,6 +65,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
         try? p.run(); p.waitUntilExit()
     }
     var closeQuitsEnabled: Bool { get { flag("winCloseQuits", false) } set { setFlag("winCloseQuits", newValue) } }
+    var dividerResizeEnabled: Bool { get { flag("winDividerResize", true) } set { setFlag("winDividerResize", newValue) } }
 
     private func flag(_ k: String, _ d: Bool) -> Bool { defaults.object(forKey: k) as? Bool ?? d }
     private func setFlag(_ k: String, _ v: Bool) { defaults.set(v, forKey: k); reload() }
@@ -100,6 +102,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
     func stop() {
         unregisterHotKeys()
         snapper.stop()
+        seams.stop()
         observers.stop()
     }
 
@@ -107,6 +110,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
     func reload() {
         if snappingEnabled { registerHotKeys() } else { unregisterHotKeys() }
         dragSnapEnabled ? snapper.start() : snapper.stop()
+        if dividerResizeEnabled { seams.start() } else { seams.stop() }
         observers.configure(closeQuits: closeQuitsEnabled)
     }
 

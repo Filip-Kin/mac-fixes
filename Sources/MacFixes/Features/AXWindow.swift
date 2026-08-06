@@ -41,6 +41,25 @@ enum AXWindow {
         return nil
     }
 
+    /// Find the on-screen window whose frame matches `target` (for resolving a
+    /// CGWindowList frame back to an AX element to resize).
+    static func window(matchingFrame target: CGRect, tolerance: CGFloat = 10) -> AXUIElement? {
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var winsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &winsRef) == .success,
+                  let arr = winsRef as? [AXUIElement] else { continue }
+            for w in arr {
+                if let f = frame(of: w),
+                   abs(f.minX - target.minX) < tolerance, abs(f.minY - target.minY) < tolerance,
+                   abs(f.width - target.width) < tolerance, abs(f.height - target.height) < tolerance {
+                    return w
+                }
+            }
+        }
+        return nil
+    }
+
     static func frame(of window: AXUIElement) -> CGRect? {
         guard let pos = value(window, kAXPositionAttribute, .cgPoint, CGPoint.self),
               let size = value(window, kAXSizeAttribute, .cgSize, CGSize.self)
