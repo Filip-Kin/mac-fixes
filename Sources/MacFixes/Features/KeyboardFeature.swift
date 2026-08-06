@@ -21,6 +21,31 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
     fileprivate var wordDelete = true
     fileprivate var tapToLaunch = true
     fileprivate var launcher = KeyCombo(keyCode: UInt32(kVK_Space), modifiers: UInt32(cmdKey))
+    fileprivate var trigger: LaunchTrigger = .command
+
+    /// Which modifier, tapped alone, fires the launcher.
+    enum LaunchTrigger: String, CaseIterable, Identifiable {
+        case command, control, option, shift, globe
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .command: return "Command / fn (⌘)"
+            case .control: return "Control (⌃)"
+            case .option:  return "Option (⌥)"
+            case .shift:   return "Shift (⇧)"
+            case .globe:   return "Globe (🌐)"
+            }
+        }
+        var mask: CGEventFlags {
+            switch self {
+            case .command: return .maskCommand
+            case .control: return .maskControl
+            case .option:  return .maskAlternate
+            case .shift:   return .maskShift
+            case .globe:   return .maskSecondaryFn
+            }
+        }
+    }
 
     // Tap-to-launch state (touched only on the tap's run loop).
     fileprivate var candidate = false
@@ -44,6 +69,11 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
     var wordDeleteEnabled: Bool { get { flag("kbWordDelete") } set { setFlag("kbWordDelete", newValue) } }
     var tapToLaunchEnabled: Bool { get { flag("kbTapLaunch") } set { setFlag("kbTapLaunch", newValue) } }
 
+    var launchTrigger: LaunchTrigger {
+        get { LaunchTrigger(rawValue: defaults.string(forKey: "kbLaunchTrigger") ?? "") ?? .command }
+        set { defaults.set(newValue.rawValue, forKey: "kbLaunchTrigger"); reloadConfig() }
+    }
+
     var launcherCombo: KeyCombo {
         get {
             if let data = defaults.data(forKey: "kbLauncher"),
@@ -66,6 +96,7 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
         wordDelete = wordDeleteEnabled
         tapToLaunch = tapToLaunchEnabled
         launcher = launcherCombo
+        trigger = launchTrigger
     }
 
     // MARK: Feature lifecycle (the event tap)
@@ -148,17 +179,18 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
     fileprivate func handleFlags(_ event: CGEvent) {
         guard tapToLaunch else { return }
         let flags = event.flags
-        let commandDown = flags.contains(.maskCommand)
-        let onlyCommand = commandDown
-            && !flags.contains(.maskShift)
-            && !flags.contains(.maskControl)
-            && !flags.contains(.maskAlternate)
+        let mask = trigger.mask
+        let allMods: [CGEventFlags] = [.maskCommand, .maskShift, .maskControl,
+                                       .maskAlternate, .maskSecondaryFn]
+        let triggerDown = flags.contains(mask)
+        let otherDown = allMods.contains { $0 != mask && flags.contains($0) }
+        let onlyTrigger = triggerDown && !otherDown
 
-        if commandDown, onlyCommand, !candidate {
+        if triggerDown, onlyTrigger, !candidate {
             candidate = true
             sawOther = false
             candidateAt = ProcessInfo.processInfo.systemUptime
-        } else if !commandDown {
+        } else if !triggerDown {
             if candidate, !sawOther,
                ProcessInfo.processInfo.systemUptime - candidateAt < 0.25 {
                 postLauncher()

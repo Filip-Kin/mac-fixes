@@ -49,14 +49,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let invert = NSMenuItem(title: "Invert mouse wheel",
-                                action: #selector(toggleInvert), keyEquivalent: "")
-        invert.target = self
-        invert.state = features.invertMouse ? .on : .off
-        menu.addItem(invert)
-
-        menu.addItem(.separator())
-
         let settings = NSMenuItem(title: "Settings…",
                                   action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
@@ -85,7 +77,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func shotClipboard() { features.screenshots.areaToClipboard() }
     @objc private func shotFile() { features.screenshots.areaToFile() }
-    @objc private func toggleInvert() { features.invertMouse.toggle() }
 
     @objc private func openSettings() {
         if settingsWindow == nil {

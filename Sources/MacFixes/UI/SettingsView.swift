@@ -158,12 +158,23 @@ private struct KeyboardPane: View {
             .disabled(!features.keyboardEnabled)
 
             HStack {
+                Text("Tap-to-launch key")
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { kb.launchTrigger }, set: { kb.launchTrigger = $0; refresh.toggle() })) {
+                    ForEach(KeyboardFeature.LaunchTrigger.allCases) { Text($0.label).tag($0) }
+                }
+                .labelsHidden().frame(width: 200)
+            }
+            .disabled(!features.keyboardEnabled || !kb.tapToLaunchEnabled)
+
+            HStack {
                 Text("Launcher shortcut")
                 Spacer()
                 HotKeyButton(combo: kb.launcherCombo) { kb.launcherCombo = $0; refresh.toggle() }
             }
             .disabled(!features.keyboardEnabled || !kb.tapToLaunchEnabled)
-            Text("Default is ⌘Space (Spotlight). Set it to your launcher’s shortcut, e.g. Raycast.")
+            Text("Tap the chosen key alone to fire the shortcut. Default shortcut is ⌘Space (Spotlight); set it to your launcher’s, e.g. Raycast. If you pick Globe, set System Settings → Keyboard → ‘Press 🌐 key to’ to ‘Do Nothing’ so it doesn’t also open emoji.")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .id(refresh)
