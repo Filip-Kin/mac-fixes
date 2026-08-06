@@ -136,7 +136,8 @@ final class SnapController: @unchecked Sendable {
     private var dragMonitor: Any?
     private var upMonitor: Any?
     private var preview: NSWindow?
-    private var pending: CGRect?   // AX-coords target for mouse-up
+    private var pending: CGRect?            // AX-coords target for mouse-up
+    private var pendingWindow: AXUIElement? // the window being dragged
     private let threshold: CGFloat = 6
 
     func start() {
@@ -178,12 +179,14 @@ final class SnapController: @unchecked Sendable {
         default:                      pos = nil
         }
 
-        guard let pos else { pending = nil; hidePreview(); return }
+        guard let pos else { pending = nil; pendingWindow = nil; hidePreview(); return }
         let vf = AXWindow.axVisibleFrame(screen)
-        let draggedFrame = AXWindow.focusedWindow().flatMap { AXWindow.frame(of: $0) }
+        let win = AXWindow.focusedWindow()
+        let draggedFrame = win.flatMap { AXWindow.frame(of: $0) }
         let occupied = AXWindow.onScreenWindowFrames(excluding: draggedFrame, intersecting: vf)
         let axTarget = Self.adaptiveTarget(pos, vf: vf, occupied: occupied)
         pending = axTarget
+        pendingWindow = win
         showPreview(AXWindow.toBottomLeft(axTarget))
     }
 
@@ -218,9 +221,17 @@ final class SnapController: @unchecked Sendable {
     }
 
     private func mouseUp() {
-        defer { pending = nil; hidePreview() }
-        guard let target = pending, let win = AXWindow.focusedWindow() else { return }
-        AXWindow.setFrame(win, target)
+        let target = pending
+        let win = pendingWindow
+        pending = nil; pendingWindow = nil
+        hidePreview()
+        guard let target, let win else { return }
+        // Apply just after the drag finalizes, or the release overrides it.
+        let rawInt = Int(bitPattern: Unmanaged.passRetained(win).toOpaque())
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            let w = Unmanaged<AXUIElement>.fromOpaque(UnsafeMutableRawPointer(bitPattern: rawInt)!).takeRetainedValue()
+            AXWindow.setFrame(w, target)
+        }
     }
 
     // Global monitors fire on the main thread, so the AppKit work is safe here.
@@ -229,12 +240,18 @@ final class SnapController: @unchecked Sendable {
             if preview == nil {
                 let w = NSWindow(contentRect: rect, styleMask: .borderless, backing: .buffered, defer: false)
                 w.isOpaque = false
-                w.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.25)
+                w.backgroundColor = .clear
                 w.ignoresMouseEvents = true
                 w.level = .floating
                 w.hasShadow = false
-                w.contentView?.wantsLayer = true
-                w.contentView?.layer?.cornerRadius = 8
+                if let layer = w.contentView?.layer ?? { w.contentView?.wantsLayer = true; return w.contentView?.layer }() {
+                    layer.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.20).cgColor
+                    layer.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.9).cgColor
+                    layer.borderWidth = 2
+                    layer.cornerRadius = 10
+                    layer.cornerCurve = .continuous   // matches macOS's rounded corners
+                    layer.masksToBounds = true
+                }
                 preview = w
             }
             preview?.setFrame(rect, display: true)
