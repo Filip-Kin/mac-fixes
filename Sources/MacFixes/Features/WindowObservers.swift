@@ -1,116 +1,70 @@
 import AppKit
 import ApplicationServices
 
-/// Watches windows across apps via the Accessibility API for close-quits: when
-/// an app's last window closes, quit the app (Windows-like).
+/// Close-quits: when a regular app's last window closes, quit it (Windows-like).
+///
+/// Implemented by polling each app's window count rather than AX destroy
+/// notifications, which many apps (TextEdit and other document apps) never emit.
+/// When an app that had at least one window drops to zero, it is terminated.
 final class WindowObservers: @unchecked Sendable {
     fileprivate var closeQuits = false
-
-    private var appObservers: [pid_t: AXObserver] = [:]
-    private var observedWindows: [AXUIElement] = []   // retained so notifications stay live
-    private var launchObs: NSObjectProtocol?
-    private var terminateObs: NSObjectProtocol?
+    private var timer: Timer?
+    private var lastCounts: [pid_t: Int] = [:]
 
     func configure(closeQuits: Bool) {
         self.closeQuits = closeQuits
-        closeQuits ? startAll() : stop()
+        closeQuits ? start() : stop()
     }
 
     func stop() {
-        for (pid, _) in appObservers { detach(pid) }
-        appObservers.removeAll()
-        observedWindows.removeAll()
-        let nc = NSWorkspace.shared.notificationCenter
-        if let o = launchObs { nc.removeObserver(o); launchObs = nil }
-        if let o = terminateObs { nc.removeObserver(o); terminateObs = nil }
+        timer?.invalidate()
+        timer = nil
+        lastCounts.removeAll()
     }
 
-    // MARK: Attach / detach
-
-    private func startAll() {
-        let ws = NSWorkspace.shared
-        for app in ws.runningApplications where app.activationPolicy == .regular {
-            attach(app.processIdentifier)
-        }
-        guard launchObs == nil else { return }
-        launchObs = ws.notificationCenter.addObserver(
-            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
-            if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
-                self?.attach(app.processIdentifier)
-            }
-        }
-        terminateObs = ws.notificationCenter.addObserver(
-            forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] note in
-            if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
-                self?.detach(app.processIdentifier)
-            }
+    private func start() {
+        guard timer == nil else { return }
+        // Seed with current counts so apps that already have no windows aren't quit.
+        lastCounts = currentCounts()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            self?.poll()
         }
     }
 
-    private func attach(_ pid: pid_t) {
-        guard appObservers[pid] == nil, pid > 0 else { return }
-        var observer: AXObserver?
-        guard AXObserverCreate(pid, axObserverCallback, &observer) == .success, let observer else { return }
-
-        let app = AXUIElementCreateApplication(pid)
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        AXObserverAddNotification(observer, app, kAXWindowCreatedNotification as CFString, refcon)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        appObservers[pid] = observer
-
-        // Observe windows that already exist.
-        var wins: CFTypeRef?
-        if AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &wins) == .success,
-           let arr = wins as? [AXUIElement] {
-            arr.forEach { observeWindow($0, observer) }
-        }
-    }
-
-    private func detach(_ pid: pid_t) {
-        guard let observer = appObservers[pid] else { return }
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        appObservers[pid] = nil
-    }
-
-    fileprivate func observeWindow(_ window: AXUIElement, _ observer: AXObserver) {
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        AXObserverAddNotification(observer, window, kAXUIElementDestroyedNotification as CFString, refcon)
-        observedWindows.append(window)
-    }
-
-    // MARK: Notification handling
-
-    fileprivate func handle(observer: AXObserver, element: AXUIElement, notification: String) {
-        switch notification {
-        case kAXWindowCreatedNotification:
-            observeWindow(element, observer)
-        case kAXUIElementDestroyedNotification:
-            windowDestroyed(element)
-        default:
-            break
-        }
-    }
-
-    private func windowDestroyed(_ window: AXUIElement) {
+    private func poll() {
         guard closeQuits else { return }
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(window, &pid) == .success, pid > 0 else { return }
+        let selfPid = ProcessInfo.processInfo.processIdentifier
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            let pid = app.processIdentifier
+            if pid == selfPid || app.bundleIdentifier == "com.apple.finder" { continue }
+
+            let count = windowCount(pid)
+            if count < 0 { continue }          // AX couldn't read; leave it alone
+            let prev = lastCounts[pid]
+            lastCounts[pid] = count
+            if let prev, prev >= 1, count == 0 {
+                app.terminate()                // last window just closed
+            }
+        }
+        // Forget apps that have quit.
+        lastCounts = lastCounts.filter { NSRunningApplication(processIdentifier: $0.key) != nil }
+    }
+
+    private func currentCounts() -> [pid_t: Int] {
+        var counts: [pid_t: Int] = [:]
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            let c = windowCount(app.processIdentifier)
+            if c >= 0 { counts[app.processIdentifier] = c }
+        }
+        return counts
+    }
+
+    /// Number of standard windows, or -1 if the Accessibility read failed.
+    private func windowCount(_ pid: pid_t) -> Int {
         let app = AXUIElementCreateApplication(pid)
         var wins: CFTypeRef?
-        let ok = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &wins) == .success
-        let count = ok ? ((wins as? [AXUIElement])?.count ?? 0) : 0
-        if count == 0 {
-            NSRunningApplication(processIdentifier: pid)?.terminate()
-        }
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &wins) == .success,
+              let arr = wins as? [AXUIElement] else { return -1 }
+        return arr.count
     }
-}
-
-/// C callback trampoline into the WindowObservers instance carried in refcon.
-private func axObserverCallback(_ observer: AXObserver,
-                                _ element: AXUIElement,
-                                _ notification: CFString,
-                                _ refcon: UnsafeMutableRawPointer?) {
-    guard let refcon else { return }
-    let me = Unmanaged<WindowObservers>.fromOpaque(refcon).takeUnretainedValue()
-    me.handle(observer: observer, element: element, notification: notification as String)
 }
