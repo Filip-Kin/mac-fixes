@@ -85,6 +85,20 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         }
     }
 
+    /// Stop and discard (delete the file, keep nothing).
+    func cancel() async {
+        guard isRecording else { return }
+        isRecording = false
+        try? await stream?.stopCapture()
+        stream = nil
+        if format == .mp4 {
+            input?.markAsFinished()
+            writer?.cancelWriting()
+        }
+        if let url = outputURL { try? FileManager.default.removeItem(at: url) }
+        gifFrames = []
+    }
+
     // MARK: SCStreamOutput
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,

@@ -65,10 +65,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let recording = features.recording.isRecording
-        addActionItem(menu, recording ? "Stop recording" : "Record area…",
-                      shortcut: recording ? nil : features.recording.recordKeys.first,
-                      action: #selector(toggleRecording))
+        if features.recording.isRecording {
+            let stop = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
+            stop.target = self
+            menu.addItem(stop)
+            let cancel = NSMenuItem(title: "Cancel recording", action: #selector(cancelRecording), keyEquivalent: "")
+            cancel.target = self
+            menu.addItem(cancel)
+        } else {
+            addActionItem(menu, "Record area → MP4",
+                          shortcut: features.recording.recordKeys.first,
+                          action: #selector(recordMP4))
+            let gif = NSMenuItem(title: "Record area → GIF", action: #selector(recordGIF), keyEquivalent: "")
+            gif.target = self
+            menu.addItem(gif)
+        }
 
         menu.addItem(.separator())
 
@@ -100,7 +111,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func shotClipboard() { features.screenshots.areaToClipboard() }
     @objc private func shotFile() { features.screenshots.areaToFile() }
-    @objc private func toggleRecording() { features.recording.toggle() }
+    @objc private func recordMP4() { features.recording.record(format: .mp4) }
+    @objc private func recordGIF() { features.recording.record(format: .gif) }
+    @objc private func stopRecording() { features.recording.stopRecording() }
+    @objc private func cancelRecording() { features.recording.cancelRecording() }
 
     @objc private func openSettings() {
         if settingsWindow == nil {

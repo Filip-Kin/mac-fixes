@@ -10,6 +10,7 @@ extension Notification.Name {
 final class RecordingFeature: Feature, @unchecked Sendable {
     private let selector = AreaSelector()
     private let recorder = ScreenRecorder()
+    private let overlay = RecordingOverlay()
     private var hotKeyIDs: [UInt32] = []
     private let defaults = UserDefaults.standard
 
@@ -66,23 +67,32 @@ final class RecordingFeature: Feature, @unchecked Sendable {
 
     // MARK: Recording flow
 
+    /// Hotkey toggle: stop if recording, else record in the saved format.
     func toggle() {
-        recorder.isRecording ? stopRecording() : pickAreaAndRecord()
+        recorder.isRecording ? stopRecording() : record(format: format)
     }
 
-    func pickAreaAndRecord() {
+    /// Start a recording in a specific format (used by the menu).
+    func record(format: RecordingFormat) {
+        guard !recorder.isRecording else { return }
         guard Permissions.hasScreenRecording else {
             Permissions.requestScreenRecording()
             Permissions.openSettings(.screenRecording)
             return
         }
+        self.format = format
+        let fps = self.fps, cursor = self.showsCursor, dir = self.saveDirectory
         selector.select { [weak self] rect in
             guard let self, let rect else { return }
-            let fmt = self.format, fps = self.fps, cursor = self.showsCursor, dir = self.saveDirectory
             Task {
                 do {
-                    try await self.recorder.start(area: rect, format: fmt, fps: fps,
+                    try await self.recorder.start(area: rect, format: format, fps: fps,
                                                   showsCursor: cursor, saveDir: dir)
+                    await MainActor.run {
+                        self.overlay.show(areaAX: rect,
+                                          onStop: { self.stopRecording() },
+                                          onCancel: { self.cancelRecording() })
+                    }
                     NotificationCenter.default.post(name: .recordingStateChanged, object: nil)
                 } catch {
                     NSLog("recording failed to start: \(error)")
@@ -94,6 +104,7 @@ final class RecordingFeature: Feature, @unchecked Sendable {
     func stopRecording() {
         Task {
             let url = await recorder.stop()
+            await MainActor.run { self.overlay.hide() }
             NotificationCenter.default.post(name: .recordingStateChanged, object: nil)
             if let url {
                 await MainActor.run {
@@ -101,6 +112,14 @@ final class RecordingFeature: Feature, @unchecked Sendable {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
             }
+        }
+    }
+
+    func cancelRecording() {
+        Task {
+            await recorder.cancel()
+            await MainActor.run { self.overlay.hide() }
+            NotificationCenter.default.post(name: .recordingStateChanged, object: nil)
         }
     }
 }
