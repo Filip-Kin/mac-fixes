@@ -9,26 +9,61 @@ Shottr) or do far more than I need. This does only what I use.
 
 ## Fixes
 
-Shipped:
+### Scroll
 
-- **Scroll** — inverts a physical mouse wheel while leaving the trackpad
-  natural. macOS only has one system-wide "natural scrolling" switch; keep it
-  ON and this inverts only the mouse (detected as non-continuous scroll).
-- **Screenshots** — area capture to clipboard or file, and window capture,
-  behind global hotkeys. Wraps the built-in `screencapture`.
-- **System tweaks** — one-button toggles that wrap `defaults write`, each with
-  a reset to the macOS default: instant Dock, scale minimize, no window
-  animations, Finder hidden files / all extensions, fast key repeat, disable
-  press-and-hold accents.
+Inverts a physical mouse wheel while leaving the trackpad natural. macOS only
+has one system-wide "natural scrolling" switch; keep it ON and this inverts only
+the mouse (detected as a non-continuous scroll event).
 
-Planned (see the roadmap below):
+### Keyboard (Windows muscle memory)
 
-- **Keyboard** — Windows-style muscle memory: `Ctrl+C/V/Z/S` etc, `Home`/`End`,
-  `Ctrl+Arrow` word jumps, consistent across the built-in and external
-  keyboards; tap the bottom-left key to open a launcher.
-- **Windows** — Rectangle-style snapping and maximize (keyboard shortcuts and
-  drag-to-edge), and red-X quits the last window.
-- **Screen recording** — record a selected area to MP4 or GIF.
+- **Modifier swap** (persistent, per-device). Makes the corner key act as
+  Command so `Ctrl+C/V/Z/S` work the Windows way on every keyboard. External
+  keyboards swap `Ctrl` and `Command` (the Windows key becomes Control); the
+  built-in maps `Fn → Command`, `Option → Globe`, `Command → Option`, and leaves
+  `Control` alone (so `Ctrl+C` still kills terminal processes). Applied at the
+  HID level with `hidutil`, reapplied at login and on keyboard hot-plug.
+- **Text navigation.** `Home`/`End` jump to line start/end, `Ctrl+Arrow` jumps by
+  word, `Ctrl+Home`/`End` to document top/bottom, `Ctrl+Backspace` deletes the
+  previous word. Each rule is an independent toggle.
+- **Tap to launch.** Tap a chosen modifier key alone to fire a launcher shortcut
+  (Spotlight by default). Off by default.
+
+### Windows
+
+- **Snap and maximize** with `Control+Option` shortcuts: halves (arrows),
+  quarters (`U I J K`), maximize (`↩`), centre (`C`).
+- **Adaptive drag-to-edge snapping.** Drag a window to an edge or corner to snap
+  it, filling the space left by other windows. Enabling it turns off macOS's own
+  edge-tiling so the two don't fight. Off by default.
+- **Divider resize.** Drag the shared edge between two snapped windows to resize
+  both at once.
+- **Close quits the app.** When a regular app's last window closes, quit it
+  (Windows-like). Finder is always left alone. Off by default.
+
+### Screen capture
+
+One pane covering screenshots and recording as a matrix of
+Area / Window / Screen × Screenshot / Record MP4 / Record GIF. Each combination
+can have its own shortcut and its own menu-bar item.
+
+- Two global switches, **Save to file** and **Copy to clipboard**, apply to every
+  capture. With "save to file" off, captures go to a temp folder so they can
+  still be copied. Recordings copy the file to the clipboard (ready to paste into
+  a chat); screenshots copy the image and the file.
+- A configurable save location (defaults to `~/Documents/Mac Fixes`).
+- While recording, a red border rings the captured area with Stop / Cancel
+  buttons beside it; both sit outside the captured rectangle so they are not
+  recorded.
+- Screenshots wrap the built-in `screencapture`; recording uses ScreenCaptureKit
+  into MP4 (`AVAssetWriter`, H.264) or GIF (ImageIO).
+
+### System tweaks
+
+One-button toggles that wrap `defaults write`, each with a reset to the macOS
+default: instant Dock, scale minimize, no window animations, Finder hidden files
+and all extensions, fast key repeat, disable press-and-hold accents, and F-keys
+as standard function keys.
 
 ## Build and install
 
@@ -41,28 +76,34 @@ open "/Applications/Filip's Mac Fixes.app"
 ```
 
 `setup-signing.sh` is optional but recommended. Without it the app is ad-hoc
-signed, and macOS forgets the Accessibility / Screen Recording grants every
-time you rebuild, re-prompting you. The one-time setup asks for your login
-password to trust the certificate.
+signed, and macOS forgets the Accessibility / Screen Recording grants every time
+you rebuild, re-prompting you. The one-time setup asks for your login password
+to trust the certificate.
 
-`build.sh` compiles a release build, assembles the `.app`, ad-hoc signs it, and
-installs it to `/Applications`. The app is a menu-bar item with no Dock icon.
+`build.sh` compiles a release build, assembles the `.app`, signs it, and installs
+it to `/Applications`. The app is a menu-bar item with no Dock icon.
 
 ## Permissions
 
-The app is unsandboxed (event taps and window control require it) and ad-hoc
-signed, so macOS will ask you to approve it. Grant these in
-**System Settings → Privacy & Security** (the app's Permissions pane links
-straight to each):
+The app is unsandboxed (event taps and window control require it), so macOS will
+ask you to approve it. Grant these in **System Settings → Privacy & Security**
+(the app's Permissions pane links straight to each):
 
-- **Accessibility** — scroll fix, window management, keyboard remaps.
-- **Input Monitoring** — keyboard remapping and tap-to-launch.
+- **Accessibility** — scroll, window management, keyboard remaps.
+- **Input Monitoring** — keyboard remapping.
 - **Screen Recording** — screenshots and screen recording.
 
 ## Honest limitations
 
-- GIF export will use the built-in encoder (256 colours, no ffmpeg): good
-  enough, not studio quality.
+- **Close-quits** reads window counts via Accessibility. A few apps (some
+  Electron/Chromium ones) don't expose their windows, so it silently skips them.
+- **Window recording** captures the frontmost window's current bounds, not an
+  interactive picker. **Screen recording** targets the main display.
+- **GIF** uses the built-in encoder (256 colours, no ffmpeg), downsized to 800px
+  wide: good for short clips, not studio quality.
+- **Tap-to-launch** can be unreliable on the Fn/Globe key on some hardware
+  (the key emits an unbound press rather than a clean modifier), which is why
+  it's off by default.
 
 ## Licence
 
