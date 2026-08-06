@@ -35,7 +35,6 @@ final class WindowFeature: Feature, @unchecked Sendable {
     var snappingEnabled: Bool { get { flag("winSnapping", true) } set { setFlag("winSnapping", newValue) } }
     var dragSnapEnabled: Bool { get { flag("winDragSnap", true) } set { setFlag("winDragSnap", newValue) } }
     var closeQuitsEnabled: Bool { get { flag("winCloseQuits", false) } set { setFlag("winCloseQuits", newValue) } }
-    var greenMaximizeEnabled: Bool { get { flag("winGreenMax", true) } set { setFlag("winGreenMax", newValue) } }
 
     private func flag(_ k: String, _ d: Bool) -> Bool { defaults.object(forKey: k) as? Bool ?? d }
     private func setFlag(_ k: String, _ v: Bool) { defaults.set(v, forKey: k); reload() }
@@ -79,7 +78,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
     func reload() {
         if snappingEnabled { registerHotKeys() } else { unregisterHotKeys() }
         dragSnapEnabled ? snapper.start() : snapper.stop()
-        observers.configure(closeQuits: closeQuitsEnabled, greenMaximize: greenMaximizeEnabled)
+        observers.configure(closeQuits: closeQuitsEnabled)
     }
 
     /// Move the focused window to a position (also used by the menu).

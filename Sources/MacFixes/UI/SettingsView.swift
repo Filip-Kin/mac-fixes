@@ -208,8 +208,6 @@ private struct WindowsPane: View {
                        get: { win.dragSnapEnabled }, set: { win.dragSnapEnabled = $0 })
                 toggle("Closing the last window quits the app",
                        get: { win.closeQuitsEnabled }, set: { win.closeQuitsEnabled = $0 })
-                toggle("Green button maximizes instead of full screen (best-effort)",
-                       get: { win.greenMaximizeEnabled }, set: { win.greenMaximizeEnabled = $0 })
             }
             .disabled(!features.windowsEnabled)
 

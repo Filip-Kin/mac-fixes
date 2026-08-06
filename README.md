@@ -26,8 +26,8 @@ Planned (see the roadmap below):
 - **Keyboard** — Windows-style muscle memory: `Ctrl+C/V/Z/S` etc, `Home`/`End`,
   `Ctrl+Arrow` word jumps, consistent across the built-in and external
   keyboards; tap the bottom-left key to open a launcher.
-- **Windows** — Rectangle-style snapping and maximize, red-X quits the last
-  window, best-effort "green button maximizes instead of full screen".
+- **Windows** — Rectangle-style snapping and maximize (keyboard shortcuts and
+  drag-to-edge), and red-X quits the last window.
 - **Screen recording** — record a selected area to MP4 or GIF.
 
 ## Build and install
@@ -61,9 +61,6 @@ straight to each):
 
 ## Honest limitations
 
-- The green traffic-light button cannot be cleanly intercepted (no public API);
-  the window fix uses a best-effort "catch full screen, pull back to maximized"
-  that some apps ignore.
 - GIF export will use the built-in encoder (256 colours, no ffmpeg): good
   enough, not studio quality.
 

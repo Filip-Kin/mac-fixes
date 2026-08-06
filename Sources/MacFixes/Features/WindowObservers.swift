@@ -1,23 +1,19 @@
 import AppKit
 import ApplicationServices
 
-/// Watches windows across apps via the Accessibility API for two behaviours:
-///  - Close-quits: when an app's last window closes, quit the app (Windows-like).
-///  - Green maximize: when a window enters native full screen, pull it back out
-///    and fill the screen instead (best-effort; some apps ignore it).
+/// Watches windows across apps via the Accessibility API for close-quits: when
+/// an app's last window closes, quit the app (Windows-like).
 final class WindowObservers: @unchecked Sendable {
     fileprivate var closeQuits = false
-    fileprivate var greenMax = false
 
     private var appObservers: [pid_t: AXObserver] = [:]
     private var observedWindows: [AXUIElement] = []   // retained so notifications stay live
     private var launchObs: NSObjectProtocol?
     private var terminateObs: NSObjectProtocol?
 
-    func configure(closeQuits: Bool, greenMaximize: Bool) {
+    func configure(closeQuits: Bool) {
         self.closeQuits = closeQuits
-        self.greenMax = greenMaximize
-        (closeQuits || greenMaximize) ? startAll() : stop()
+        closeQuits ? startAll() : stop()
     }
 
     func stop() {
@@ -79,7 +75,6 @@ final class WindowObservers: @unchecked Sendable {
     fileprivate func observeWindow(_ window: AXUIElement, _ observer: AXObserver) {
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         AXObserverAddNotification(observer, window, kAXUIElementDestroyedNotification as CFString, refcon)
-        AXObserverAddNotification(observer, window, kAXWindowResizedNotification as CFString, refcon)
         observedWindows.append(window)
     }
 
@@ -91,8 +86,6 @@ final class WindowObservers: @unchecked Sendable {
             observeWindow(element, observer)
         case kAXUIElementDestroyedNotification:
             windowDestroyed(element)
-        case kAXWindowResizedNotification:
-            maybeUndoFullscreen(element)
         default:
             break
         }
@@ -108,23 +101,6 @@ final class WindowObservers: @unchecked Sendable {
         let count = ok ? ((wins as? [AXUIElement])?.count ?? 0) : 0
         if count == 0 {
             NSRunningApplication(processIdentifier: pid)?.terminate()
-        }
-    }
-
-    private func maybeUndoFullscreen(_ window: AXUIElement) {
-        guard greenMax else { return }
-        var ref: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, "AXFullScreen" as CFString, &ref) == .success,
-              let isFull = ref as? Bool, isFull else { return }
-
-        AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
-        // Exiting full screen animates; fill the screen once it settles. Pass
-        // the window through an opaque pointer to avoid a Sendable violation.
-        let rawInt = Int(bitPattern: Unmanaged.passRetained(window).toOpaque())
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            let win = Unmanaged<AXUIElement>.fromOpaque(UnsafeMutableRawPointer(bitPattern: rawInt)!).takeRetainedValue()
-            guard let frame = AXWindow.frame(of: win) else { return }
-            AXWindow.setFrame(win, AXWindow.axVisibleFrame(AXWindow.screen(forAX: frame)))
         }
     }
 }
