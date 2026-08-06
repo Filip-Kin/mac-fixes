@@ -2,22 +2,37 @@ import Foundation
 import IOKit.hid
 import AppKit
 
-/// Swaps Left Control and Left Command system-wide via `hidutil`, so the
-/// left-most modifier key — which is Control on both the built-in Mac keyboard
-/// and a standard external PC keyboard — acts as Command. That gives Windows
-/// muscle memory (Ctrl+C = copy, etc) at the HID level, before any app sees it.
+/// Per-keyboard modifier remapping via `hidutil`, for Windows muscle memory.
 ///
-/// hidutil mappings do not survive reboot and are not guaranteed to reach a
-/// keyboard plugged in later, so this also installs a LaunchAgent (reapplies at
-/// login) and reapplies on wake and whenever a keyboard is attached.
-// Confined to the main run loop (setters, wake observer, IOKit callback all
-// arrive there); the unchecked conformance reflects that.
+/// The corner key becomes Command (the copy/paste key) on every keyboard, but
+/// the corner key differs by keyboard, so the mapping is per-device:
+///
+///  - External PC keyboards (global mapping): Ctrl <-> Command, so the corner
+///    Ctrl acts as Command and the Windows key acts as Control. Alt stays Option.
+///  - Built-in MacBook keyboard (scoped override, since its corner is Fn):
+///    Fn -> Command, Ctrl stays Control, Option -> Fn/Globe, Command -> Option.
+///
+/// Device-scoped hidutil mappings replace the global one for that device, so
+/// the global mapping covers all external keyboards (present and future) while
+/// the built-in gets its own. hidutil mappings do not survive reboot and may
+/// not reach a keyboard plugged in later, so this also installs a LaunchAgent
+/// (reapplies at login) and reapplies on wake and on keyboard hot-plug.
 final class ModifierSwap: @unchecked Sendable {
     private let agentLabel = "com.filipkin.macfixes.keyswap"
+    private let hidutil = "/usr/bin/hidutil"
 
-    // HID usage ids on the keyboard usage page (0x7 prefix).
-    private let leftControl = 0x7000000E0
-    private let leftCommand = 0x7000000E3
+    // Match the internal keyboard by product name (it has no USB vendor/product id).
+    private let builtinMatch = #"{"Product":"Apple Internal Keyboard / Trackpad"}"#
+
+    // External keyboards: swap Left Control (E0) and Left Command / GUI (E3).
+    private let externalMapping =
+        #"{"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":0x7000000E0,"HIDKeyboardModifierMappingDst":0x7000000E3},{"HIDKeyboardModifierMappingSrc":0x7000000E3,"HIDKeyboardModifierMappingDst":0x7000000E0}]}"#
+
+    // Built-in: Fn(0xFF00000003)->Command(E3), Option(E2)->Fn, Command(E3)->Option(E2).
+    private let builtinMapping =
+        #"{"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":0xFF00000003,"HIDKeyboardModifierMappingDst":0x7000000E3},{"HIDKeyboardModifierMappingSrc":0x7000000E2,"HIDKeyboardModifierMappingDst":0xFF00000003},{"HIDKeyboardModifierMappingSrc":0x7000000E3,"HIDKeyboardModifierMappingDst":0x7000000E2}]}"#
+
+    private let emptyMapping = #"{"UserKeyMapping":[]}"#
 
     private var hidManager: IOHIDManager?
     private var wakeObserver: NSObjectProtocol?
@@ -44,27 +59,34 @@ final class ModifierSwap: @unchecked Sendable {
         clearMapping()
     }
 
-    /// Reapply at launch if it should be on (LaunchAgent already covers login,
-    /// this covers the app being (re)opened and starts the hot-plug watcher).
+    /// Reapply at launch if it should be on. Refreshes the LaunchAgent (in case
+    /// the mapping changed in an update) and starts the hot-plug watcher.
     func reapplyIfEnabled() {
         guard isEnabled else { return }
+        writeAgent()
         applyMapping()
         startWatching()
     }
 
     // MARK: hidutil
 
-    private var mappingJSON: String {
-        "{\"UserKeyMapping\":["
-        + "{\"HIDKeyboardModifierMappingSrc\":\(leftControl),\"HIDKeyboardModifierMappingDst\":\(leftCommand)},"
-        + "{\"HIDKeyboardModifierMappingSrc\":\(leftCommand),\"HIDKeyboardModifierMappingDst\":\(leftControl)}"
-        + "]}"
+    private func applyMapping() {
+        // Global first, then the built-in override (which wins for that device).
+        run(hidutil, ["property", "--set", externalMapping])
+        run(hidutil, ["property", "--matching", builtinMatch, "--set", builtinMapping])
     }
 
-    private func applyMapping() { run("/usr/bin/hidutil", ["property", "--set", mappingJSON]) }
-    private func clearMapping() { run("/usr/bin/hidutil", ["property", "--set", "{\"UserKeyMapping\":[]}"]) }
+    private func clearMapping() {
+        run(hidutil, ["property", "--set", emptyMapping])
+        run(hidutil, ["property", "--matching", builtinMatch, "--set", emptyMapping])
+    }
 
     // MARK: LaunchAgent (persist across login)
+
+    private var agentCommand: String {
+        "\(hidutil) property --set '\(externalMapping)' ; "
+        + "\(hidutil) property --matching '\(builtinMatch)' --set '\(builtinMapping)'"
+    }
 
     private func writeAgent() {
         let plist = """
@@ -75,10 +97,9 @@ final class ModifierSwap: @unchecked Sendable {
             <key>Label</key><string>\(agentLabel)</string>
             <key>ProgramArguments</key>
             <array>
-                <string>/usr/bin/hidutil</string>
-                <string>property</string>
-                <string>--set</string>
-                <string>\(mappingJSON)</string>
+                <string>/bin/sh</string>
+                <string>-c</string>
+                <string>\(agentCommand)</string>
             </array>
             <key>RunAtLoad</key><true/>
         </dict>
@@ -110,7 +131,7 @@ final class ModifierSwap: @unchecked Sendable {
         IOHIDManagerRegisterDeviceMatchingCallback(mgr, { context, _, _, _ in
             guard let context else { return }
             let me = Unmanaged<ModifierSwap>.fromOpaque(context).takeUnretainedValue()
-            me.applyMapping()  // a keyboard was attached — reapply the mapping
+            me.applyMapping()  // a keyboard was attached — reapply the mappings
         }, ctx)
         IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))

@@ -132,9 +132,9 @@ private struct KeyboardPane: View {
         VStack(alignment: .leading, spacing: 16) {
             PaneHeader("Keyboard", "Windows muscle memory across the built-in and external keyboards.")
 
-            Toggle("Swap Control and Command (persistent, all keyboards)", isOn: Binding(
+            Toggle("Windows-style modifier keys (persistent)", isOn: Binding(
                 get: { kb.swapModifiers }, set: { kb.swapModifiers = $0; refresh.toggle() }))
-            Text("Makes the left-most key act as Command, so Ctrl+C, Ctrl+V, Ctrl+Z, Ctrl+S all work the Windows way. Applied at the hardware level and reapplied on login and when you plug in a keyboard.")
+            Text("Makes the corner key act as Command so Ctrl+C/V/Z/S work the Windows way. External keyboards: Ctrl↔Command (Windows key becomes Control). Built-in: Fn→Command, Option→Globe, Command→Option, and Control stays Control (so Ctrl+C still kills terminal processes). Applied at the hardware level and reapplied on login and keyboard hot-plug.")
                 .font(.callout).foregroundStyle(.secondary)
 
             Divider()
