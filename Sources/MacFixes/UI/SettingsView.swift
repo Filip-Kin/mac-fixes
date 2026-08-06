@@ -3,6 +3,7 @@ import SwiftUI
 enum SettingsPane: String, CaseIterable, Identifiable {
     case scroll = "Scroll"
     case screenshots = "Screenshots"
+    case keyboard = "Keyboard"
     case tweaks = "System Tweaks"
     case permissions = "Permissions"
     case about = "About"
@@ -12,6 +13,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .scroll: return "computermouse"
         case .screenshots: return "camera.viewfinder"
+        case .keyboard: return "keyboard"
         case .tweaks: return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .about: return "info.circle"
@@ -35,6 +37,7 @@ struct SettingsView: View {
                     switch pane ?? .scroll {
                     case .scroll: ScrollPane(features: features)
                     case .screenshots: ScreenshotPane(features: features)
+                    case .keyboard: KeyboardPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
                     case .about: AboutPane()
@@ -117,6 +120,58 @@ private struct ScreenshotPane: View {
         if panel.runModal() == .OK, let url = panel.url {
             shot.setSaveDirectory(url); refresh.toggle()
         }
+    }
+}
+
+private struct KeyboardPane: View {
+    @ObservedObject var features: FeatureManager
+    @State private var refresh = false
+
+    var body: some View {
+        let kb = features.keyboard
+        VStack(alignment: .leading, spacing: 16) {
+            PaneHeader("Keyboard", "Windows muscle memory across the built-in and external keyboards.")
+
+            Toggle("Swap Control and Command (persistent, all keyboards)", isOn: Binding(
+                get: { kb.swapModifiers }, set: { kb.swapModifiers = $0; refresh.toggle() }))
+            Text("Makes the left-most key act as Command, so Ctrl+C, Ctrl+V, Ctrl+Z, Ctrl+S all work the Windows way. Applied at the hardware level and reapplied on login and when you plug in a keyboard.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Divider()
+
+            Toggle("Enable text-navigation and tap-to-launch", isOn: $features.keyboardEnabled)
+            Text("The rules below need this on. They assume the swap above is enabled.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Group {
+                ruleToggle("Home / End jump to line start / end",
+                           get: { kb.homeEndEnabled }, set: { kb.homeEndEnabled = $0 })
+                ruleToggle("Ctrl + ← / → jump by word",
+                           get: { kb.wordJumpEnabled }, set: { kb.wordJumpEnabled = $0 })
+                ruleToggle("Ctrl + Home / End jump to document top / bottom",
+                           get: { kb.docNavEnabled }, set: { kb.docNavEnabled = $0 })
+                ruleToggle("Ctrl + Backspace deletes the previous word",
+                           get: { kb.wordDeleteEnabled }, set: { kb.wordDeleteEnabled = $0 })
+                ruleToggle("Tap the bottom-left key alone to open a launcher",
+                           get: { kb.tapToLaunchEnabled }, set: { kb.tapToLaunchEnabled = $0 })
+            }
+            .disabled(!features.keyboardEnabled)
+
+            HStack {
+                Text("Launcher shortcut")
+                Spacer()
+                HotKeyButton(combo: kb.launcherCombo) { kb.launcherCombo = $0; refresh.toggle() }
+            }
+            .disabled(!features.keyboardEnabled || !kb.tapToLaunchEnabled)
+            Text("Default is ⌘Space (Spotlight). Set it to your launcher’s shortcut, e.g. Raycast.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        .id(refresh)
+    }
+
+    private func ruleToggle(_ label: String, get: @escaping @Sendable () -> Bool,
+                            set: @escaping @Sendable (Bool) -> Void) -> some View {
+        Toggle(label, isOn: Binding(get: get, set: { set($0); refresh.toggle() }))
     }
 }
 

@@ -1,0 +1,208 @@
+import AppKit
+import CoreGraphics
+import Carbon.HIToolbox
+
+/// Windows-style keyboard behaviour.
+///
+/// Works with (and assumes) the Control/Command swap in `ModifierSwap`: after
+/// the swap the left-most key sends Command, so "Ctrl+…" habits arrive here as
+/// Command. This event tap then handles the chords that a single-key swap
+/// cannot: text navigation and tap-a-modifier-to-launch.
+final class KeyboardFeature: Feature, @unchecked Sendable {
+    private var tap: CFMachPort?
+    let modifierSwap = ModifierSwap()
+
+    private let defaults = UserDefaults.standard
+
+    // Cached config, refreshed from UserDefaults via reloadConfig().
+    fileprivate var homeEnd = true
+    fileprivate var wordJump = true
+    fileprivate var docNav = true
+    fileprivate var wordDelete = true
+    fileprivate var tapToLaunch = true
+    fileprivate var launcher = KeyCombo(keyCode: UInt32(kVK_Space), modifiers: UInt32(cmdKey))
+
+    // Tap-to-launch state (touched only on the tap's run loop).
+    fileprivate var candidate = false
+    fileprivate var sawOther = false
+    fileprivate var candidateAt: TimeInterval = 0
+
+    init() { reloadConfig() }
+
+    // MARK: Persisted config
+
+    var swapModifiers: Bool {
+        get { defaults.object(forKey: "kbSwap") as? Bool ?? false }
+        set {
+            defaults.set(newValue, forKey: "kbSwap")
+            newValue ? modifierSwap.enable() : modifierSwap.disable()
+        }
+    }
+    var homeEndEnabled: Bool  { get { flag("kbHomeEnd") } set { setFlag("kbHomeEnd", newValue) } }
+    var wordJumpEnabled: Bool { get { flag("kbWordJump") } set { setFlag("kbWordJump", newValue) } }
+    var docNavEnabled: Bool   { get { flag("kbDocNav") } set { setFlag("kbDocNav", newValue) } }
+    var wordDeleteEnabled: Bool { get { flag("kbWordDelete") } set { setFlag("kbWordDelete", newValue) } }
+    var tapToLaunchEnabled: Bool { get { flag("kbTapLaunch") } set { setFlag("kbTapLaunch", newValue) } }
+
+    var launcherCombo: KeyCombo {
+        get {
+            if let data = defaults.data(forKey: "kbLauncher"),
+               let c = try? JSONDecoder().decode(KeyCombo.self, from: data) { return c }
+            return KeyCombo(keyCode: UInt32(kVK_Space), modifiers: UInt32(cmdKey))
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) { defaults.set(data, forKey: "kbLauncher") }
+            reloadConfig()
+        }
+    }
+
+    private func flag(_ key: String) -> Bool { defaults.object(forKey: key) as? Bool ?? true }
+    private func setFlag(_ key: String, _ v: Bool) { defaults.set(v, forKey: key); reloadConfig() }
+
+    func reloadConfig() {
+        homeEnd = homeEndEnabled
+        wordJump = wordJumpEnabled
+        docNav = docNavEnabled
+        wordDelete = wordDeleteEnabled
+        tapToLaunch = tapToLaunchEnabled
+        launcher = launcherCombo
+    }
+
+    // MARK: Feature lifecycle (the event tap)
+
+    @discardableResult
+    func start() -> Bool {
+        modifierSwap.reapplyIfEnabled()
+        reloadConfig()
+        guard tap == nil else { return true }
+
+        let mask = CGEventMask(
+            (1 << CGEventType.keyDown.rawValue) |
+            (1 << CGEventType.keyUp.rawValue) |
+            (1 << CGEventType.flagsChanged.rawValue))
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+
+        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
+                                          place: .headInsertEventTap,
+                                          options: .defaultTap,
+                                          eventsOfInterest: mask,
+                                          callback: keyboardCallback,
+                                          userInfo: refcon) else {
+            Permissions.promptAccessibility()
+            return false
+        }
+        self.tap = tap
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        return true
+    }
+
+    func stop() {
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        if let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+        }
+        CFMachPortInvalidate(tap)
+        self.tap = nil
+        // Note: the persistent modifier swap is intentionally NOT undone here;
+        // it is only removed when the user turns that toggle off.
+    }
+
+    fileprivate func reenable() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+    }
+
+    // MARK: Navigation remaps (mutates the event in place)
+
+    fileprivate func applyNavRules(_ event: CGEvent) {
+        let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let flags = event.flags
+        let cmd = flags.contains(.maskCommand)
+        let base: CGEventFlags = flags.contains(.maskShift) ? .maskShift : []
+
+        func set(_ newCode: Int, _ newFlags: CGEventFlags) {
+            event.setIntegerValueField(.keyboardEventKeycode, value: Int64(newCode))
+            event.flags = newFlags
+        }
+
+        switch code {
+        case kVK_Home where homeEnd:
+            set(cmd && docNav ? kVK_UpArrow : kVK_LeftArrow, base.union(.maskCommand))
+        case kVK_End where homeEnd:
+            set(cmd && docNav ? kVK_DownArrow : kVK_RightArrow, base.union(.maskCommand))
+        case kVK_LeftArrow where cmd && wordJump:
+            set(kVK_LeftArrow, base.union(.maskAlternate))
+        case kVK_RightArrow where cmd && wordJump:
+            set(kVK_RightArrow, base.union(.maskAlternate))
+        case kVK_Delete where cmd && wordDelete:
+            set(kVK_Delete, base.union(.maskAlternate))
+        default:
+            break
+        }
+    }
+
+    // MARK: Tap-a-modifier-to-launch
+
+    fileprivate func handleFlags(_ event: CGEvent) {
+        guard tapToLaunch else { return }
+        let flags = event.flags
+        let commandDown = flags.contains(.maskCommand)
+        let onlyCommand = commandDown
+            && !flags.contains(.maskShift)
+            && !flags.contains(.maskControl)
+            && !flags.contains(.maskAlternate)
+
+        if commandDown, onlyCommand, !candidate {
+            candidate = true
+            sawOther = false
+            candidateAt = ProcessInfo.processInfo.systemUptime
+        } else if !commandDown {
+            if candidate, !sawOther,
+               ProcessInfo.processInfo.systemUptime - candidateAt < 0.25 {
+                postLauncher()
+            }
+            candidate = false
+        } else {
+            candidate = false  // another modifier joined; not a lone tap
+        }
+    }
+
+    fileprivate func noteKey() { if candidate { sawOther = true } }
+
+    private func postLauncher() {
+        let src = CGEventSource(stateID: .hidSystemState)
+        let code = CGKeyCode(launcher.keyCode)
+        let down = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true)
+        down?.flags = launcher.cgFlags
+        down?.post(tap: .cghidEventTap)
+        let up = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false)
+        up?.flags = launcher.cgFlags
+        up?.post(tap: .cghidEventTap)
+    }
+}
+
+private func keyboardCallback(proxy: CGEventTapProxy,
+                              type: CGEventType,
+                              event: CGEvent,
+                              refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
+    guard let refcon else { return Unmanaged.passUnretained(event) }
+    let feature = Unmanaged<KeyboardFeature>.fromOpaque(refcon).takeUnretainedValue()
+
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        feature.reenable()
+        return Unmanaged.passUnretained(event)
+    }
+
+    switch type {
+    case .flagsChanged:
+        feature.handleFlags(event)
+    case .keyDown, .keyUp:
+        feature.noteKey()
+        feature.applyNavRules(event)
+    default:
+        break
+    }
+    return Unmanaged.passUnretained(event)
+}

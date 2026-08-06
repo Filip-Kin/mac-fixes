@@ -9,6 +9,7 @@ final class FeatureManager: ObservableObject {
 
     private let scroll = ScrollFeature()
     let screenshots = ScreenshotFeature()
+    let keyboard = KeyboardFeature()
     let tweaks = SystemTweaks()
 
     // MARK: Persisted feature state
@@ -35,6 +36,13 @@ final class FeatureManager: ObservableObject {
         }
     }
 
+    @Published var keyboardEnabled: Bool {
+        didSet {
+            defaults.set(keyboardEnabled, forKey: "keyboardEnabled")
+            apply(keyboard, enabled: keyboardEnabled)
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -42,11 +50,13 @@ final class FeatureManager: ObservableObject {
         if defaults.object(forKey: "scrollEnabled") == nil { defaults.set(true, forKey: "scrollEnabled") }
         if defaults.object(forKey: "invertMouse") == nil { defaults.set(true, forKey: "invertMouse") }
         if defaults.object(forKey: "screenshotsEnabled") == nil { defaults.set(true, forKey: "screenshotsEnabled") }
+        // Keyboard fixes are intrusive; default off until the user opts in.
 
         // Initialise stored properties (didSet does not fire during init).
         scrollEnabled = defaults.bool(forKey: "scrollEnabled")
         invertMouse = defaults.bool(forKey: "invertMouse")
         screenshotsEnabled = defaults.bool(forKey: "screenshotsEnabled")
+        keyboardEnabled = defaults.bool(forKey: "keyboardEnabled")
 
         scroll.invertMouse = invertMouse
     }
@@ -55,6 +65,10 @@ final class FeatureManager: ObservableObject {
     func bootstrap() {
         if scrollEnabled { _ = scroll.start() }
         if screenshotsEnabled { screenshots.start() }
+        if keyboardEnabled { _ = keyboard.start() }
+        // Reapply the persistent modifier swap and start its hot-plug watcher,
+        // even if the event-tap part of the keyboard feature is off.
+        keyboard.modifierSwap.reapplyIfEnabled()
     }
 
     private func apply(_ feature: Feature, enabled: Bool) {

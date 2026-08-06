@@ -61,6 +61,16 @@ extension KeyCombo {
         return m
     }
 
+    /// Modifier flags in CoreGraphics form (for synthesizing events).
+    var cgFlags: CGEventFlags {
+        var f: CGEventFlags = []
+        if modifiers & UInt32(cmdKey)     != 0 { f.insert(.maskCommand) }
+        if modifiers & UInt32(optionKey)  != 0 { f.insert(.maskAlternate) }
+        if modifiers & UInt32(controlKey) != 0 { f.insert(.maskControl) }
+        if modifiers & UInt32(shiftKey)   != 0 { f.insert(.maskShift) }
+        return f
+    }
+
     /// The key-equivalent string AppKit renders natively (e.g. F13 → "F13").
     var appKitKeyEquivalent: String {
         if let f = KeyCombo.functionNumber(Int(keyCode)) {
