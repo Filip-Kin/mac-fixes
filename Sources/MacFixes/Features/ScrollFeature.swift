@@ -9,6 +9,15 @@ import CoreGraphics
 ///
 /// Detection: trackpad / Magic Mouse scrolls are "continuous" (pixel/momentum);
 /// a physical scroll wheel is not. We invert the non-continuous ones.
+///
+/// Mechanism: the tap REPLACES the event with a freshly built one rather than
+/// editing the original's fields. Since macOS 26.6.x the window server
+/// re-derives the point and fixed-point deltas of a hardware-backed scroll
+/// event from its raw HID data after the tap stages run, so negating those
+/// fields in place (or on a copy) no longer sticks: only the line delta
+/// flipped, and modern apps scroll by the point delta, so the direction did
+/// not change. A fresh event has no HID backing, so its fields are delivered
+/// to apps exactly as set.
 final class ScrollFeature: Feature {
     private var tap: CFMachPort?
 
@@ -53,6 +62,11 @@ final class ScrollFeature: Feature {
     }
 }
 
+/// Points per wheel line the window server assigns to a physical mouse wheel
+/// (observed on macOS 26.6.2: point delta = 8 × line, fixed-point delta = line).
+/// Applied to the replacement event so scroll speed is unchanged.
+private let pointsPerLine: Int64 = 8
+
 private func scrollCallback(proxy: CGEventTapProxy,
                             type: CGEventType,
                             event: CGEvent,
@@ -66,21 +80,32 @@ private func scrollCallback(proxy: CGEventTapProxy,
         return Unmanaged.passUnretained(event)
     }
 
-    guard type == .scrollWheel, feature.invertMouse else {
+    // Non-continuous == physical mouse wheel. Anything else passes through.
+    guard type == .scrollWheel, feature.invertMouse,
+          event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else {
         return Unmanaged.passUnretained(event)
     }
 
-    // Non-continuous == physical mouse wheel. Invert its vertical axis.
-    if event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 {
-        let line = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-        event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: -line)
+    // Vertical axis inverted; horizontal left as-is.
+    let line1 = -event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+    let line2 = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
 
-        let point = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
-        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: -point)
-
-        let fixed = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
-        event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: -fixed)
+    guard let replacement = CGEvent(scrollWheelEvent2Source: nil,
+                                    units: .line,
+                                    wheelCount: 2,
+                                    wheel1: Int32(clamping: line1),
+                                    wheel2: Int32(clamping: line2),
+                                    wheel3: 0) else {
+        return Unmanaged.passUnretained(event)
     }
+    replacement.location = event.location
+    replacement.flags = event.flags
+    replacement.timestamp = event.timestamp
+    replacement.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: line1 * pointsPerLine)
+    replacement.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: Double(line1))
+    replacement.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: line2 * pointsPerLine)
+    replacement.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: Double(line2))
 
-    return Unmanaged.passUnretained(event)
+    // The tap machinery releases the returned event; hand over our +1.
+    return Unmanaged.passRetained(replacement)
 }
