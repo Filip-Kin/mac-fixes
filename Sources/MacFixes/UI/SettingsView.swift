@@ -256,10 +256,24 @@ private struct KeyboardPane: View {
 
             Divider()
 
-            Toggle("Windows browser shortcuts (F5, Ctrl+F5, Ctrl+Shift+T)", isOn: Binding(
+            Toggle("Windows browser shortcuts (F5 refresh, Ctrl+F5 hard refresh)", isOn: Binding(
                 get: { browsers.applied }, set: { $0 ? browsers.apply() : browsers.remove() }))
             Text("Written as per-app shortcuts, the same thing System Settings › Keyboard › Keyboard Shortcuts › App Shortcuts does, so the browser handles the key itself. Takes effect the next time each browser is launched. Only menu items that exist can be bound.")
                 .font(.callout).foregroundStyle(.secondary)
+            if browsers.needsFullDiskAccess {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Could not write \(browsers.failedWrites.map { browsers.name(for: $0) }.sorted().joined(separator: ", ")). Safari keeps its shortcuts in a protected container, so Mac Fixes needs Full Disk Access to change them.")
+                        Button("Open Full Disk Access settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                    .font(.callout)
+                }
+            }
             let installed = browsers.installed
             if installed.isEmpty {
                 Text("No supported browser found (Edge, Safari, Chrome, Brave).").font(.callout).foregroundStyle(.secondary)
@@ -274,7 +288,7 @@ private struct KeyboardPane: View {
                     .font(.callout)
                 }
             }
-            Text("Edge has no ‘Reopen Closed Tab’ menu item and its hard-refresh item shares the title of the normal one, so only F5 can be bound there; use Ctrl+Shift+R / Ctrl+Shift+T on a swapped keyboard (they arrive as ⌘⇧R / ⌘⇧T). On a swapped external keyboard Ctrl+F5 arrives as ⌘F5, which macOS reserves for VoiceOver; Ctrl+F5 works as written on the built-in keyboard.")
+            Text("Edge’s regular and force-refresh menu items share a title, so Edge gets F5 only; on a swapped keyboard use Ctrl+Shift+R for a hard refresh (it arrives as ⌘⇧R). Ctrl+Shift+T reopens a tab everywhere already, so it isn’t set here. On a swapped external keyboard Ctrl+F5 arrives as ⌘F5, which macOS reserves for VoiceOver; Ctrl+F5 works as written on the built-in keyboard.")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .id(refresh)

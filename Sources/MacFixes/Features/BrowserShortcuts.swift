@@ -30,19 +30,24 @@ final class BrowserShortcuts: ObservableObject {
     private static let hardReloadKey = "^" + f5
     private static let reopenTabKey = "^$t"
 
+    // Reopen-closed-tab is deliberately left out: Ctrl+Shift+T already reopens
+    // a tab on both the built-in and external keyboards in every browser, so
+    // there is nothing to bind. Only refresh / hard-refresh are set here.
     static let known: [Browser] = [
+        // Edge's regular and force-refresh menu items share the title "Refresh
+        // This Page", so only the plain F5 refresh can be bound by title.
         Browser(id: "com.microsoft.edgemac", name: "Microsoft Edge",
                 reload: "Refresh This Page", hardReload: nil, reopenTab: nil, verified: true),
         Browser(id: "com.apple.Safari", name: "Safari",
                 reload: "Reload Page", hardReload: "Reload Page From Origin",
-                reopenTab: "Reopen Last Closed Tab", verified: true),
+                reopenTab: nil, verified: true),
         // Chromium titles; not verified on this Mac.
         Browser(id: "com.google.Chrome", name: "Google Chrome",
                 reload: "Reload This Page", hardReload: "Force Reload This Page",
-                reopenTab: "Reopen Closed Tab", verified: false),
+                reopenTab: nil, verified: false),
         Browser(id: "com.brave.Browser", name: "Brave",
                 reload: "Reload This Page", hardReload: "Force Reload This Page",
-                reopenTab: "Reopen Closed Tab", verified: false),
+                reopenTab: nil, verified: false),
     ]
 
     /// Browsers from `known` that are installed.
@@ -51,11 +56,20 @@ final class BrowserShortcuts: ObservableObject {
     }
 
     @Published private(set) var applied: Bool
+    /// Bundle ids whose last write failed (Safari's container is protected
+    /// unless the app has Full Disk Access).
+    @Published private(set) var failedWrites: Set<String> = []
 
     private let defaults = UserDefaults.standard
     private let appliedKey = "browserShortcutsApplied"
 
     init() { applied = defaults.bool(forKey: "browserShortcutsApplied") }
+
+    /// True when at least one installed browser could not be written (needs
+    /// Full Disk Access). Only meaningful right after apply()/remove().
+    var needsFullDiskAccess: Bool { !failedWrites.isEmpty }
+
+    func name(for id: String) -> String { Self.known.first { $0.id == id }?.name ?? id }
 
     /// What a browser gets: (menu title, key equivalent) pairs.
     func entries(for b: Browser) -> [(title: String, key: String)] {
@@ -67,23 +81,29 @@ final class BrowserShortcuts: ObservableObject {
     }
 
     func apply() {
+        var failed: Set<String> = []
         for b in installed {
             var dict = Self.readEquivalents(b.id)
             for (title, key) in entries(for: b) { dict[title] = key }
-            Self.writeEquivalents(b.id, dict)
-            trace("BrowserShortcuts", "\(b.name): set \(entries(for: b).map { "\($0.title)=\(Self.describe($0.key))" }.joined(separator: ", "))")
+            let ok = Self.writeEquivalents(b.id, dict)
+            if !ok { failed.insert(b.id) }
+            trace("BrowserShortcuts", "\(b.name): set \(entries(for: b).map { "\($0.title)=\(Self.describe($0.key))" }.joined(separator: ", ")) → \(ok ? "ok" : "WRITE FAILED (needs Full Disk Access)")")
         }
+        failedWrites = failed
         applied = true
         defaults.set(true, forKey: appliedKey)
     }
 
     func remove() {
+        var failed: Set<String> = []
         for b in installed {
             var dict = Self.readEquivalents(b.id)
             for (title, key) in entries(for: b) where dict[title] == key { dict[title] = nil }
-            Self.writeEquivalents(b.id, dict)
-            trace("BrowserShortcuts", "\(b.name): removed our entries")
+            let ok = Self.writeEquivalents(b.id, dict)
+            if !ok { failed.insert(b.id) }
+            trace("BrowserShortcuts", "\(b.name): removed our entries → \(ok ? "ok" : "WRITE FAILED")")
         }
+        failedWrites = failed
         applied = false
         defaults.set(false, forKey: appliedKey)
     }
@@ -108,34 +128,34 @@ final class BrowserShortcuts: ObservableObject {
     // apps (Safari) into their container the way System Settings does.
 
     private static func readEquivalents(_ bundleID: String) -> [String: String] {
-        let out = run(["defaults", "export", bundleID, "-"])
+        let out = run(["defaults", "export", bundleID, "-"]).data
         guard let data = out,
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let dict = plist["NSUserKeyEquivalents"] as? [String: String] else { return [:] }
         return dict
     }
 
-    private static func writeEquivalents(_ bundleID: String, _ dict: [String: String]) {
+    @discardableResult
+    private static func writeEquivalents(_ bundleID: String, _ dict: [String: String]) -> Bool {
         if dict.isEmpty {
-            _ = run(["defaults", "delete", bundleID, "NSUserKeyEquivalents"])
-            return
+            // Nothing left of ours; leave any pre-existing (empty) key as-is.
+            return run(["defaults", "delete", bundleID, "NSUserKeyEquivalents"]).ok
         }
         guard let data = try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0),
-              let xml = String(data: data, encoding: .utf8) else { return }
-        _ = run(["defaults", "write", bundleID, "NSUserKeyEquivalents", xml])
+              let xml = String(data: data, encoding: .utf8) else { return false }
+        return run(["defaults", "write", bundleID, "NSUserKeyEquivalents", xml]).ok
     }
 
-    @discardableResult
-    private static func run(_ argv: [String]) -> Data? {
+    private static func run(_ argv: [String]) -> (data: Data?, ok: Bool) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = argv
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { NSLog("defaults failed (\(argv)): \(error)"); return nil }
+        do { try p.run() } catch { NSLog("defaults failed (\(argv)): \(error)"); return (nil, false) }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        return p.terminationStatus == 0 ? data : nil
+        return (data, p.terminationStatus == 0)
     }
 }

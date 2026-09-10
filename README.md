@@ -51,21 +51,22 @@ while it is on. The same as `caffeinate -d`, without the terminal window.
 - **Windows shortcuts.** `Ctrl+Shift+Esc` opens Activity Monitor (handled by
   the event tap; the `⌘⇧Esc` form is accepted too because the external-keyboard
   swap turns the physical Ctrl key into Command).
-- **Windows browser shortcuts.** `F5` refresh, `Ctrl+F5` hard refresh and
-  `Ctrl+Shift+T` reopen closed tab, written as per-app shortcuts
-  (`NSUserKeyEquivalents`, the same thing System Settings › Keyboard ›
-  Keyboard Shortcuts › App Shortcuts writes) for every installed supported
-  browser, so the browser handles the key itself. No event tap is involved;
-  an earlier attempt to rewrite `F5` into `⌘R` in the tap failed because a
-  key event returned from a tap carries no characters and menu shortcut
-  matching needs them. Only menu items that exist can be bound: Edge has no
-  "Reopen Closed Tab" item and its hard-refresh item shares the title of the
-  normal one, so Edge gets `F5` only (use `Ctrl+Shift+R` / `Ctrl+Shift+T` on a
-  swapped keyboard, which arrive as `⌘⇧R` / `⌘⇧T`). Safari gets all three.
-  Chrome and Brave use Chromium's titles, unverified here. On a swapped
+- **Windows browser shortcuts.** `F5` refresh and `Ctrl+F5` hard refresh,
+  written as per-app shortcuts (`NSUserKeyEquivalents`, the same thing System
+  Settings › Keyboard › Keyboard Shortcuts › App Shortcuts writes) for every
+  installed supported browser, so the browser handles the key itself. No event
+  tap is involved; an earlier attempt to rewrite `F5` into `⌘R` in a tap failed
+  because a key event returned from a tap carries no characters and menu
+  shortcut matching needs them. Only menu items that exist can be bound: Edge's
+  regular and force-refresh items share a title, so Edge gets `F5` only (use
+  `Ctrl+Shift+R`, which arrives as `⌘⇧R` on a swapped keyboard, for a hard
+  refresh). Safari gets both. Chrome and Brave use Chromium's titles, unverified
+  here. `Ctrl+Shift+T` already reopens a closed tab on both keyboards, so it is
+  not set. Safari keeps its shortcuts in a protected container, so writing them
+  needs Full Disk Access; the pane offers a button to grant it. On a swapped
   external keyboard `Ctrl+F5` arrives as `⌘F5`, which macOS reserves for
-  VoiceOver. Takes effect on the browser's next launch. Turning the toggle
-  off removes only the entries this app wrote.
+  VoiceOver. Takes effect on the browser's next launch. Turning the toggle off
+  removes only the entries this app wrote.
 - **Tap to launch.** Tap a chosen modifier key alone to fire a launcher shortcut
   (Spotlight by default). Off by default.
 
