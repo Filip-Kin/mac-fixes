@@ -48,6 +48,15 @@ while it is on. The same as `caffeinate -d`, without the terminal window.
 - **Text navigation.** `Home`/`End` jump to line start/end, `Ctrl+Arrow` jumps by
   word, `Ctrl+Home`/`End` to document top/bottom, `Ctrl+Backspace` deletes the
   previous word. Each rule is an independent toggle.
+- **Windows shortcuts.** In browsers (Edge, Safari, Chrome, Firefox, Arc, Brave,
+  Vivaldi, Opera): `F5` refreshes (sent as `⌘R`), `Ctrl+F5` hard-refreshes
+  (`⌘⇧R`, or `⌥⌘R` "Reload Page From Origin" in Safari), and a recordable chord
+  (default `Ctrl+Shift+T`) reopens the last closed tab (`⌘⇧T`). Anywhere,
+  `Ctrl+Shift+Esc` opens Activity Monitor. The `⌘` forms of these chords are
+  accepted too, because the external-keyboard swap turns the physical Ctrl key
+  into Command (this also stops `⌘F5` toggling VoiceOver while a browser is
+  frontmost). On the built-in keyboard, `F5` needs the "F-keys as standard
+  function keys" tweak. Each rule is an independent toggle.
 - **Tap to launch.** Tap a chosen modifier key alone to fire a launcher shortcut
   (Spotlight by default). Off by default.
 

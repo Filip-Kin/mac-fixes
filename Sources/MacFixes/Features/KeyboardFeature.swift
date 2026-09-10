@@ -22,6 +22,21 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
     fileprivate var tapToLaunch = true
     fileprivate var launcher = KeyCombo(keyCode: UInt32(kVK_Space), modifiers: UInt32(cmdKey))
     fileprivate var trigger: LaunchTrigger = .command
+    fileprivate var f5Refresh = true
+    fileprivate var reopenTab = true
+    fileprivate var reopenTabTrigger = KeyboardFeature.defaultReopenTabCombo
+    fileprivate var taskManager = true
+
+    static let defaultReopenTabCombo = KeyCombo(keyCode: UInt32(kVK_ANSI_T),
+                                                modifiers: UInt32(controlKey | shiftKey))
+
+    /// Apps where F5 / reopen-tab are translated to the Mac equivalents.
+    /// Prefix match so Edge/Chrome Beta, Dev and Canary builds are included.
+    private static let browserBundlePrefixes = [
+        "com.microsoft.edgemac", "com.apple.Safari", "com.google.Chrome",
+        "org.mozilla.firefox", "company.thebrowser.Browser", "com.brave.Browser",
+        "com.vivaldi.Vivaldi", "com.operasoftware.Opera",
+    ]
 
     /// Which modifier, tapped alone, fires the launcher.
     enum LaunchTrigger: String, CaseIterable, Identifiable {
@@ -85,6 +100,23 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
         set { setFlag("kbTapLaunch", newValue) }
     }
 
+    var f5RefreshEnabled: Bool { get { flag("kbF5Refresh") } set { setFlag("kbF5Refresh", newValue) } }
+    var reopenTabEnabled: Bool { get { flag("kbReopenTab") } set { setFlag("kbReopenTab", newValue) } }
+    var taskManagerEnabled: Bool { get { flag("kbTaskManager") } set { setFlag("kbTaskManager", newValue) } }
+
+    /// The chord that reopens the last closed tab in a browser (sent on as ⌘⇧T).
+    var reopenTabCombo: KeyCombo {
+        get {
+            if let data = defaults.data(forKey: "kbReopenTabCombo"),
+               let c = try? JSONDecoder().decode(KeyCombo.self, from: data) { return c }
+            return KeyboardFeature.defaultReopenTabCombo
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) { defaults.set(data, forKey: "kbReopenTabCombo") }
+            reloadConfig()
+        }
+    }
+
     var launchTrigger: LaunchTrigger {
         get { LaunchTrigger(rawValue: defaults.string(forKey: "kbLaunchTrigger") ?? "") ?? .command }
         set { defaults.set(newValue.rawValue, forKey: "kbLaunchTrigger"); reloadConfig() }
@@ -113,6 +145,10 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
         tapToLaunch = tapToLaunchEnabled
         launcher = launcherCombo
         trigger = launchTrigger
+        f5Refresh = f5RefreshEnabled
+        reopenTab = reopenTabEnabled
+        reopenTabTrigger = reopenTabCombo
+        taskManager = taskManagerEnabled
     }
 
     // MARK: Feature lifecycle (the event tap)
@@ -190,6 +226,80 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
         }
     }
 
+    // MARK: Windows shortcuts (F5, reopen tab, task manager)
+
+    /// Modifier bits that matter when matching a chord.
+    private static let chordMask: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
+
+    /// Bundle id of the app the key event is going to, or nil.
+    private func targetBrowser(_ event: CGEvent) -> String? {
+        let pid = pid_t(event.getIntegerValueField(.eventTargetUnixProcessID))
+        let app = (pid > 0 ? NSRunningApplication(processIdentifier: pid) : nil)
+            ?? NSWorkspace.shared.frontmostApplication
+        guard let id = app?.bundleIdentifier,
+              KeyboardFeature.browserBundlePrefixes.contains(where: { id.hasPrefix($0) })
+        else { return nil }
+        return id
+    }
+
+    private func isBrowser(_ event: CGEvent) -> Bool { targetBrowser(event) != nil }
+
+    /// Returns true when the event should be swallowed (the action was handled
+    /// here). Otherwise the event may have been rewritten in place and should
+    /// be passed on.
+    fileprivate func applyWindowsShortcuts(_ event: CGEvent, keyDown: Bool) -> Bool {
+        let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        let mods = event.flags.intersection(KeyboardFeature.chordMask)
+
+        func set(_ newCode: Int, _ newFlags: CGEventFlags) {
+            event.setIntegerValueField(.keyboardEventKeycode, value: Int64(newCode))
+            event.flags = event.flags.subtracting(KeyboardFeature.chordMask).union(newFlags)
+        }
+
+        // Ctrl+Shift+Esc → Activity Monitor. Also accept ⌘⇧Esc: with the
+        // external-keyboard swap on, the physical Ctrl key arrives as Command.
+        if taskManager, code == kVK_Escape,
+           mods == [.maskControl, .maskShift] || mods == [.maskCommand, .maskShift] {
+            if keyDown { openActivityMonitor() }
+            return true
+        }
+
+        // F5 → ⌘R in browsers. Ctrl+F5 → hard refresh: ⌘⇧R in Edge/Chromium/
+        // Firefox, ⌥⌘R ("Reload Page From Origin") in Safari. ⌘F5 is accepted
+        // as well because the external-keyboard swap turns physical Ctrl into
+        // Command; catching it here also stops it toggling VoiceOver.
+        if f5Refresh, code == kVK_F5, let browser = targetBrowser(event) {
+            if mods.isEmpty {
+                set(kVK_ANSI_R, .maskCommand)
+                return false
+            }
+            if mods == .maskControl || mods == .maskCommand {
+                let hard: CGEventFlags = browser.hasPrefix("com.apple.Safari")
+                    ? [.maskCommand, .maskAlternate] : [.maskCommand, .maskShift]
+                set(kVK_ANSI_R, hard)
+                return false
+            }
+        }
+
+        // Reopen last closed tab → ⌘⇧T in browsers.
+        if reopenTab, code == Int(reopenTabTrigger.keyCode),
+           mods == reopenTabTrigger.cgFlags, isBrowser(event) {
+            set(kVK_ANSI_T, [.maskCommand, .maskShift])
+            return false
+        }
+        return false
+    }
+
+    private func openActivityMonitor() {
+        DispatchQueue.main.async {
+            guard let url = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: "com.apple.ActivityMonitor") else { return }
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: config)
+        }
+    }
+
     // MARK: Tap-a-modifier-to-launch
 
     fileprivate func handleFlags(_ event: CGEvent) {
@@ -258,6 +368,7 @@ private func keyboardCallback(proxy: CGEventTapProxy,
         feature.handleFlags(event)
     case .keyDown, .keyUp:
         feature.noteKey()
+        if feature.applyWindowsShortcuts(event, keyDown: type == .keyDown) { return nil }
         feature.applyNavRules(event)
     default:
         break

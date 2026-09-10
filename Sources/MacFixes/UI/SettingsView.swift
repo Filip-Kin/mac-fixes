@@ -211,7 +211,7 @@ private struct KeyboardPane: View {
 
             Divider()
 
-            Toggle("Enable text-navigation and tap-to-launch", isOn: $features.keyboardEnabled)
+            Toggle("Enable text-navigation, Windows shortcuts and tap-to-launch", isOn: $features.keyboardEnabled)
             Text("The rules below need this on. They assume the swap above is enabled.")
                 .font(.callout).foregroundStyle(.secondary)
 
@@ -224,10 +224,25 @@ private struct KeyboardPane: View {
                            get: { kb.docNavEnabled }, set: { kb.docNavEnabled = $0 })
                 ruleToggle("Ctrl + Backspace deletes the previous word",
                            get: { kb.wordDeleteEnabled }, set: { kb.wordDeleteEnabled = $0 })
+                ruleToggle("F5 refreshes the page in browsers (⌘R); Ctrl + F5 hard-refreshes (⌘⇧R, ⌥⌘R in Safari)",
+                           get: { kb.f5RefreshEnabled }, set: { kb.f5RefreshEnabled = $0 })
+                ruleToggle("Reopen the last closed tab in browsers (sent as ⌘⇧T)",
+                           get: { kb.reopenTabEnabled }, set: { kb.reopenTabEnabled = $0 })
+                ruleToggle("Ctrl + Shift + Esc opens Activity Monitor",
+                           get: { kb.taskManagerEnabled }, set: { kb.taskManagerEnabled = $0 })
                 ruleToggle("Tap a modifier key alone to open a launcher",
                            get: { kb.tapToLaunchEnabled }, set: { kb.tapToLaunchEnabled = $0 })
             }
             .disabled(!features.keyboardEnabled)
+
+            HStack {
+                Text("Reopen-tab shortcut")
+                Spacer()
+                HotKeyButton(combo: kb.reopenTabCombo) { kb.reopenTabCombo = $0; refresh.toggle() }
+            }
+            .disabled(!features.keyboardEnabled || !kb.reopenTabEnabled)
+            Text("Browser rules apply in Edge, Safari, Chrome, Firefox, Arc, Brave, Vivaldi and Opera. Default reopen-tab chord is ⌃⇧T, the Windows one; with the external-keyboard swap the physical Ctrl+Shift+T already arrives as ⌘⇧T and works natively, so this mainly matters on the built-in keyboard. For F5 on the built-in keyboard, turn on ‘F-keys as standard function keys’ in System tweaks.")
+                .font(.callout).foregroundStyle(.secondary)
 
             HStack {
                 Text("Tap-to-launch key")
