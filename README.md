@@ -15,6 +15,23 @@ Inverts a physical mouse wheel while leaving the trackpad natural. macOS only
 has one system-wide "natural scrolling" switch; keep it ON and this inverts only
 the mouse (detected as a non-continuous scroll event).
 
+### Clipboard history
+
+The Windows `Win+V` thing. Everything you copy (text, images, files) is kept,
+newest first, and `⌃V` opens a popup to search it and paste an entry back into
+the app you were in. With the modifier swap on an external keyboard `⌃V` is the
+physical `Win+V`. Content flagged as concealed or transient by the source app
+(password managers, autofill) is never recorded, and recording pauses while a
+known password manager is frontmost. Stored locally under
+`~/Library/Application Support/Filip's Mac Fixes`. The popup also has UUID
+(`⌘U`) and nanoid (`⌘N`) buttons that generate, copy and paste a fresh id.
+
+### Keep awake
+
+A menu-bar item that stops the display and the Mac from idle-sleeping for 30
+minutes to 4 hours, or until turned off. The menu-bar icon turns into a cup
+while it is on. The same as `caffeinate -d`, without the terminal window.
+
 ### Keyboard (Windows muscle memory)
 
 - **Modifier swap** (persistent, per-device). Makes the corner key act as

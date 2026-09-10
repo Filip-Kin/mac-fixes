@@ -10,6 +10,7 @@ final class FeatureManager: ObservableObject {
 
     private let scroll = ScrollFeature()
     let capture = CaptureFeature()
+    let clipboard = ClipboardFeature()
     let keyboard = KeyboardFeature()
     let windows = WindowFeature()
     let tweaks = SystemTweaks()
@@ -35,6 +36,13 @@ final class FeatureManager: ObservableObject {
         didSet {
             defaults.set(captureEnabled, forKey: "captureEnabled")
             apply(capture, enabled: captureEnabled)
+        }
+    }
+
+    @Published var clipboardEnabled: Bool {
+        didSet {
+            defaults.set(clipboardEnabled, forKey: "clipboardEnabled")
+            apply(clipboard, enabled: clipboardEnabled)
         }
     }
 
@@ -74,12 +82,14 @@ final class FeatureManager: ObservableObject {
         if defaults.object(forKey: "scrollEnabled") == nil { defaults.set(true, forKey: "scrollEnabled") }
         if defaults.object(forKey: "invertMouse") == nil { defaults.set(true, forKey: "invertMouse") }
         if defaults.object(forKey: "captureEnabled") == nil { defaults.set(true, forKey: "captureEnabled") }
+        if defaults.object(forKey: "clipboardEnabled") == nil { defaults.set(true, forKey: "clipboardEnabled") }
         // Keyboard fixes are intrusive; default off until the user opts in.
 
         // Initialise stored properties (didSet does not fire during init).
         scrollEnabled = defaults.bool(forKey: "scrollEnabled")
         invertMouse = defaults.bool(forKey: "invertMouse")
         captureEnabled = defaults.bool(forKey: "captureEnabled")
+        clipboardEnabled = defaults.bool(forKey: "clipboardEnabled")
         keyboardEnabled = defaults.bool(forKey: "keyboardEnabled")
         windowsEnabled = defaults.bool(forKey: "windowsEnabled")
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -93,6 +103,7 @@ final class FeatureManager: ObservableObject {
         if defaults.object(forKey: "launchAtLogin") == nil, !launchAtLogin { launchAtLogin = true }
         if scrollEnabled { _ = scroll.start() }
         if captureEnabled { _ = capture.start() }
+        if clipboardEnabled { _ = clipboard.start() }
         if keyboardEnabled { _ = keyboard.start() }
         if windowsEnabled { _ = windows.start() }
         // Reapply the persistent modifier swap and start its hot-plug watcher,

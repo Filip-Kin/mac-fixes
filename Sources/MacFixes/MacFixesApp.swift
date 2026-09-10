@@ -28,11 +28,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(forName: .recordingStateChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusIcon() }
         }
+        NotificationCenter.default.addObserver(forName: .keepAwakeChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateStatusIcon() }
+        }
     }
 
     private func updateStatusIcon() {
         let recording = features.capture.isRecording
-        let name = recording ? "record.circle" : "wrench.and.screwdriver"
+        let awake = KeepAwake.shared.isActive
+        let name = recording ? "record.circle" : awake ? "cup.and.saucer.fill" : "wrench.and.screwdriver"
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "Filip's Mac Fixes")
         if recording {
             image?.isTemplate = false
@@ -78,6 +82,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        if features.clipboardEnabled {
+            let clip = NSMenuItem(title: "Clipboard History…", action: #selector(openClipboard), keyEquivalent: "")
+            clip.target = self
+            clip.keyEquivalent = features.clipboard.hotKey.appKitKeyEquivalent
+            clip.keyEquivalentModifierMask = features.clipboard.hotKey.appKitModifiers
+            menu.addItem(clip)
+        }
+
+        let awake = KeepAwake.shared
+        let awakeItem = NSMenuItem(title: awake.menuTitle, action: nil, keyEquivalent: "")
+        awakeItem.image = NSImage(systemSymbolName: awake.isActive ? "cup.and.saucer.fill" : "cup.and.saucer", accessibilityDescription: nil)
+        let sub = NSMenu()
+        let off = NSMenuItem(title: "Off", action: #selector(keepAwakeOff), keyEquivalent: "")
+        off.target = self
+        off.state = awake.isActive ? .off : .on
+        sub.addItem(off)
+        sub.addItem(.separator())
+        for (idx, choice) in KeepAwake.durations.enumerated() {
+            let item = NSMenuItem(title: choice.label, action: #selector(keepAwake(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = idx
+            if awake.isActive, let active = awake.activeMinutes, active == choice.minutes { item.state = .on }
+            sub.addItem(item)
+        }
+        awakeItem.submenu = sub
+        menu.addItem(awakeItem)
+
+        menu.addItem(.separator())
+
         let settings = NSMenuItem(title: "Settings…",
                                   action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
@@ -110,6 +143,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         features.capture.perform(action)
     }
     @objc private func stopRecording() { features.capture.stopRecording() }
+    @objc private func openClipboard() { features.clipboard.showPanel() }
+    @objc private func keepAwakeOff() { KeepAwake.shared.stop() }
+    @objc private func keepAwake(_ sender: NSMenuItem) {
+        guard KeepAwake.durations.indices.contains(sender.tag) else { return }
+        KeepAwake.shared.start(minutes: KeepAwake.durations[sender.tag].minutes)
+    }
     @objc private func cancelRecording() { features.capture.cancelRecording() }
 
     @objc private func openSettings() {

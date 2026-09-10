@@ -407,16 +407,7 @@ final class ModifierSwap: NSObject, ObservableObject, UNUserNotificationCenterDe
         }
     }
 
-    // MARK: Trace (~/Library/Logs/MacFixes.log, one line per decision, capped)
-
-    private func trace(_ msg: String) {
-        let path = "\(NSHomeDirectory())/Library/Logs/MacFixes.log"
-        let line = "\(Date()) ModifierSwap: \(msg)\n"
-        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        if let size = attrs?[.size] as? Int, size > 256 * 1024 { try? FileManager.default.removeItem(atPath: path) }
-        if let h = FileHandle(forWritingAtPath: path) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile() }
-        else { try? line.write(toFile: path, atomically: true, encoding: .utf8) }
-    }
+    private func trace(_ msg: String) { MacFixes.trace("ModifierSwap", msg) }
 
     // MARK: Process helper
 

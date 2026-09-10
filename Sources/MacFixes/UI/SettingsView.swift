@@ -3,6 +3,7 @@ import SwiftUI
 enum SettingsPane: String, CaseIterable, Identifiable {
     case scroll = "Scroll"
     case capture = "Screen Capture"
+    case clipboard = "Clipboard"
     case keyboard = "Keyboard"
     case windows = "Windows"
     case tweaks = "System Tweaks"
@@ -14,6 +15,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .scroll: return "computermouse"
         case .capture: return "camera.viewfinder"
+        case .clipboard: return "doc.on.clipboard"
         case .keyboard: return "keyboard"
         case .windows: return "macwindow"
         case .tweaks: return "slider.horizontal.3"
@@ -39,6 +41,7 @@ struct SettingsView: View {
                     switch pane ?? .scroll {
                     case .scroll: ScrollPane(features: features)
                     case .capture: CapturePane(features: features)
+                    case .clipboard: ClipboardPane(features: features, clip: features.clipboard)
                     case .keyboard: KeyboardPane(features: features, swap: features.keyboard.modifierSwap)
                     case .windows: WindowsPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
@@ -126,6 +129,53 @@ private struct CapturePane: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         if panel.runModal() == .OK, let url = panel.url { cap.setSaveLocation(url); refresh.toggle() }
+    }
+}
+
+private struct ClipboardPane: View {
+    @ObservedObject var features: FeatureManager
+    @ObservedObject var clip: ClipboardFeature
+    @State private var refresh = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PaneHeader("Clipboard", "History of what you copy, with a popup to search and paste it back.")
+            Toggle("Enable clipboard history", isOn: $features.clipboardEnabled)
+
+            HStack {
+                Text("Open history")
+                Spacer()
+                HotKeyButton(combo: clip.hotKey) { clip.hotKey = $0; refresh.toggle() }
+            }
+            Text("Default is ⌃V. With the Windows-style modifier swap on an external keyboard, that is the physical Win+V, same as Windows. In the popup: type to search, ↑↓ to move, ↩ to paste into the app you were in, ⌘⌫ to delete an entry, esc to close.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Stepper("Keep the last \(clip.maxItems) items", value: Binding(
+                get: { clip.maxItems }, set: { clip.maxItems = $0; refresh.toggle() }), in: 20...2000, step: 20)
+                .frame(width: 260)
+
+            HStack(spacing: 24) {
+                Stepper("nanoid length: \(clip.nanoidLength)", value: Binding(
+                    get: { clip.nanoidLength }, set: { clip.nanoidLength = $0; refresh.toggle() }), in: 8...64)
+                    .frame(width: 200)
+                Toggle("Uppercase UUIDs", isOn: Binding(
+                    get: { clip.uuidUppercase }, set: { clip.uuidUppercase = $0; refresh.toggle() }))
+            }
+            Text("The popup has UUID (⌘U) and nanoid (⌘N) buttons: generate, copy, and paste in one go. The value lands in the history too.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Toggle("Pause while a password manager is frontmost", isOn: Binding(
+                get: { clip.pauseForPasswordManagers }, set: { clip.pauseForPasswordManagers = $0; refresh.toggle() }))
+            Text("Content that apps mark as concealed or transient (password fields, autofill) is never recorded regardless. Text, images and copied files are kept in ~/Library/Application Support/Filip's Mac Fixes, on this Mac only.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            HStack {
+                Button("Open history now") { clip.showPanel() }
+                Button("Clear history (\(clip.items.count) items)", role: .destructive) { clip.clear() }
+                    .disabled(clip.items.isEmpty)
+            }
+        }
+        .id(refresh)
     }
 }
 
