@@ -12,6 +12,7 @@ final class FeatureManager: ObservableObject {
     let capture = CaptureFeature()
     let clipboard = ClipboardFeature()
     let keyboard = KeyboardFeature()
+    let browserShortcuts = BrowserShortcuts()
     let windows = WindowFeature()
     let tweaks = SystemTweaks()
 

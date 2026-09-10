@@ -42,7 +42,7 @@ struct SettingsView: View {
                     case .scroll: ScrollPane(features: features)
                     case .capture: CapturePane(features: features)
                     case .clipboard: ClipboardPane(features: features, clip: features.clipboard)
-                    case .keyboard: KeyboardPane(features: features, swap: features.keyboard.modifierSwap)
+                    case .keyboard: KeyboardPane(features: features, swap: features.keyboard.modifierSwap, browsers: features.browserShortcuts)
                     case .windows: WindowsPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
@@ -182,6 +182,7 @@ private struct ClipboardPane: View {
 private struct KeyboardPane: View {
     @ObservedObject var features: FeatureManager
     @ObservedObject var swap: ModifierSwap
+    @ObservedObject var browsers: BrowserShortcuts
     @State private var refresh = false
 
     var body: some View {
@@ -211,7 +212,7 @@ private struct KeyboardPane: View {
 
             Divider()
 
-            Toggle("Enable text-navigation, Windows shortcuts and tap-to-launch", isOn: $features.keyboardEnabled)
+            Toggle("Enable text-navigation, task manager and tap-to-launch", isOn: $features.keyboardEnabled)
             Text("The rules below need this on. They assume the swap above is enabled.")
                 .font(.callout).foregroundStyle(.secondary)
 
@@ -224,25 +225,12 @@ private struct KeyboardPane: View {
                            get: { kb.docNavEnabled }, set: { kb.docNavEnabled = $0 })
                 ruleToggle("Ctrl + Backspace deletes the previous word",
                            get: { kb.wordDeleteEnabled }, set: { kb.wordDeleteEnabled = $0 })
-                ruleToggle("F5 refreshes the page in browsers (⌘R); Ctrl + F5 hard-refreshes (⌘⇧R, ⌥⌘R in Safari)",
-                           get: { kb.f5RefreshEnabled }, set: { kb.f5RefreshEnabled = $0 })
-                ruleToggle("Reopen the last closed tab in browsers (sent as ⌘⇧T)",
-                           get: { kb.reopenTabEnabled }, set: { kb.reopenTabEnabled = $0 })
                 ruleToggle("Ctrl + Shift + Esc opens Activity Monitor",
                            get: { kb.taskManagerEnabled }, set: { kb.taskManagerEnabled = $0 })
                 ruleToggle("Tap a modifier key alone to open a launcher",
                            get: { kb.tapToLaunchEnabled }, set: { kb.tapToLaunchEnabled = $0 })
             }
             .disabled(!features.keyboardEnabled)
-
-            HStack {
-                Text("Reopen-tab shortcut")
-                Spacer()
-                HotKeyButton(combo: kb.reopenTabCombo) { kb.reopenTabCombo = $0; refresh.toggle() }
-            }
-            .disabled(!features.keyboardEnabled || !kb.reopenTabEnabled)
-            Text("Browser rules apply in Edge, Safari, Chrome, Firefox, Arc, Brave, Vivaldi and Opera. Default reopen-tab chord is ⌃⇧T, the Windows one; with the external-keyboard swap the physical Ctrl+Shift+T already arrives as ⌘⇧T and works natively, so this mainly matters on the built-in keyboard. For F5 on the built-in keyboard, turn on ‘F-keys as standard function keys’ in System tweaks.")
-                .font(.callout).foregroundStyle(.secondary)
 
             HStack {
                 Text("Tap-to-launch key")
@@ -264,6 +252,29 @@ private struct KeyboardPane: View {
             }
             .disabled(!features.keyboardEnabled || !kb.tapToLaunchEnabled)
             Text("Tap the chosen key alone to fire the shortcut. Default shortcut is ⌘Space (Spotlight); set it to your launcher’s, e.g. Raycast. If you pick Globe, set System Settings → Keyboard → ‘Press 🌐 key to’ to ‘Do Nothing’ so it doesn’t also open emoji.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Divider()
+
+            Toggle("Windows browser shortcuts (F5, Ctrl+F5, Ctrl+Shift+T)", isOn: Binding(
+                get: { browsers.applied }, set: { $0 ? browsers.apply() : browsers.remove() }))
+            Text("Written as per-app shortcuts, the same thing System Settings › Keyboard › Keyboard Shortcuts › App Shortcuts does, so the browser handles the key itself. Takes effect the next time each browser is launched. Only menu items that exist can be bound.")
+                .font(.callout).foregroundStyle(.secondary)
+            let installed = browsers.installed
+            if installed.isEmpty {
+                Text("No supported browser found (Edge, Safari, Chrome, Brave).").font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach(installed) { b in
+                    HStack(alignment: .top) {
+                        Text(b.name).frame(width: 130, alignment: .leading)
+                        Text(browsers.entries(for: b).map { "\(BrowserShortcuts.describe($0.key)) \($0.title)" }.joined(separator: "   ·   ")
+                             + (b.verified ? "" : "   (titles not verified on this Mac)"))
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.callout)
+                }
+            }
+            Text("Edge has no ‘Reopen Closed Tab’ menu item and its hard-refresh item shares the title of the normal one, so only F5 can be bound there; use Ctrl+Shift+R / Ctrl+Shift+T on a swapped keyboard (they arrive as ⌘⇧R / ⌘⇧T). On a swapped external keyboard Ctrl+F5 arrives as ⌘F5, which macOS reserves for VoiceOver; Ctrl+F5 works as written on the built-in keyboard.")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .id(refresh)

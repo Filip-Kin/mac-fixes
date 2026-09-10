@@ -48,18 +48,24 @@ while it is on. The same as `caffeinate -d`, without the terminal window.
 - **Text navigation.** `Home`/`End` jump to line start/end, `Ctrl+Arrow` jumps by
   word, `Ctrl+Home`/`End` to document top/bottom, `Ctrl+Backspace` deletes the
   previous word. Each rule is an independent toggle.
-- **Windows shortcuts.** In browsers (Edge, Safari, Chrome, Firefox, Arc, Brave,
-  Vivaldi, Opera): `F5` refreshes (sent as `⌘R`), `Ctrl+F5` hard-refreshes
-  (`⌘⇧R`, or `⌥⌘R` "Reload Page From Origin" in Safari), and a recordable chord
-  (default `Ctrl+Shift+T`) reopens the last closed tab (`⌘⇧T`). Anywhere,
-  `Ctrl+Shift+Esc` opens Activity Monitor. The `⌘` forms of these chords are
-  accepted too, because the external-keyboard swap turns the physical Ctrl key
-  into Command (this also stops `⌘F5` toggling VoiceOver while a browser is
-  frontmost). On the built-in keyboard, `F5` needs the "F-keys as standard
-  function keys" tweak. Each rule is an independent toggle. Like the scroll fix,
-  remapped keys are re-issued as fresh events rather than edited in place,
-  because macOS 26.6.x rebuilds hardware key events from raw HID data after
-  the tap and discards in-place edits.
+- **Windows shortcuts.** `Ctrl+Shift+Esc` opens Activity Monitor (handled by
+  the event tap; the `⌘⇧Esc` form is accepted too because the external-keyboard
+  swap turns the physical Ctrl key into Command).
+- **Windows browser shortcuts.** `F5` refresh, `Ctrl+F5` hard refresh and
+  `Ctrl+Shift+T` reopen closed tab, written as per-app shortcuts
+  (`NSUserKeyEquivalents`, the same thing System Settings › Keyboard ›
+  Keyboard Shortcuts › App Shortcuts writes) for every installed supported
+  browser, so the browser handles the key itself. No event tap is involved;
+  an earlier attempt to rewrite `F5` into `⌘R` in the tap failed because a
+  key event returned from a tap carries no characters and menu shortcut
+  matching needs them. Only menu items that exist can be bound: Edge has no
+  "Reopen Closed Tab" item and its hard-refresh item shares the title of the
+  normal one, so Edge gets `F5` only (use `Ctrl+Shift+R` / `Ctrl+Shift+T` on a
+  swapped keyboard, which arrive as `⌘⇧R` / `⌘⇧T`). Safari gets all three.
+  Chrome and Brave use Chromium's titles, unverified here. On a swapped
+  external keyboard `Ctrl+F5` arrives as `⌘F5`, which macOS reserves for
+  VoiceOver. Takes effect on the browser's next launch. Turning the toggle
+  off removes only the entries this app wrote.
 - **Tap to launch.** Tap a chosen modifier key alone to fire a launcher shortcut
   (Spotlight by default). Off by default.
 
