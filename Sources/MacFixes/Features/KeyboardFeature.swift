@@ -171,9 +171,11 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
                                           eventsOfInterest: mask,
                                           callback: keyboardCallback,
                                           userInfo: refcon) else {
+            trace("Keyboard", "event tap creation FAILED (AX trusted: \(AXIsProcessTrusted()))")
             Permissions.promptAccessibility()
             return false
         }
+        trace("Keyboard", "event tap created (AX trusted: \(AXIsProcessTrusted()))")
         self.tap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
@@ -197,32 +199,35 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
         if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
     }
 
-    // MARK: Navigation remaps (mutates the event in place)
+    /// What the tap should do with a key event.
+    enum Outcome {
+        case pass
+        case swallow
+        /// Replace with a fresh event carrying this key code and modifier set.
+        case rewrite(code: Int, flags: CGEventFlags)
+    }
 
-    fileprivate func applyNavRules(_ event: CGEvent) {
+    // MARK: Navigation remaps
+
+    fileprivate func navRule(_ event: CGEvent) -> Outcome {
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
         let cmd = flags.contains(.maskCommand)
         let base: CGEventFlags = flags.contains(.maskShift) ? .maskShift : []
 
-        func set(_ newCode: Int, _ newFlags: CGEventFlags) {
-            event.setIntegerValueField(.keyboardEventKeycode, value: Int64(newCode))
-            event.flags = newFlags
-        }
-
         switch code {
         case kVK_Home where homeEnd:
-            set(cmd && docNav ? kVK_UpArrow : kVK_LeftArrow, base.union(.maskCommand))
+            return .rewrite(code: cmd && docNav ? kVK_UpArrow : kVK_LeftArrow, flags: base.union(.maskCommand))
         case kVK_End where homeEnd:
-            set(cmd && docNav ? kVK_DownArrow : kVK_RightArrow, base.union(.maskCommand))
+            return .rewrite(code: cmd && docNav ? kVK_DownArrow : kVK_RightArrow, flags: base.union(.maskCommand))
         case kVK_LeftArrow where cmd && wordJump:
-            set(kVK_LeftArrow, base.union(.maskAlternate))
+            return .rewrite(code: kVK_LeftArrow, flags: base.union(.maskAlternate))
         case kVK_RightArrow where cmd && wordJump:
-            set(kVK_RightArrow, base.union(.maskAlternate))
+            return .rewrite(code: kVK_RightArrow, flags: base.union(.maskAlternate))
         case kVK_Delete where cmd && wordDelete:
-            set(kVK_Delete, base.union(.maskAlternate))
+            return .rewrite(code: kVK_Delete, flags: base.union(.maskAlternate))
         default:
-            break
+            return .pass
         }
     }
 
@@ -244,24 +249,16 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
 
     private func isBrowser(_ event: CGEvent) -> Bool { targetBrowser(event) != nil }
 
-    /// Returns true when the event should be swallowed (the action was handled
-    /// here). Otherwise the event may have been rewritten in place and should
-    /// be passed on.
-    fileprivate func applyWindowsShortcuts(_ event: CGEvent, keyDown: Bool) -> Bool {
+    fileprivate func windowsShortcut(_ event: CGEvent, keyDown: Bool) -> Outcome {
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let mods = event.flags.intersection(KeyboardFeature.chordMask)
-
-        func set(_ newCode: Int, _ newFlags: CGEventFlags) {
-            event.setIntegerValueField(.keyboardEventKeycode, value: Int64(newCode))
-            event.flags = event.flags.subtracting(KeyboardFeature.chordMask).union(newFlags)
-        }
 
         // Ctrl+Shift+Esc → Activity Monitor. Also accept ⌘⇧Esc: with the
         // external-keyboard swap on, the physical Ctrl key arrives as Command.
         if taskManager, code == kVK_Escape,
            mods == [.maskControl, .maskShift] || mods == [.maskCommand, .maskShift] {
             if keyDown { openActivityMonitor() }
-            return true
+            return .swallow
         }
 
         // F5 → ⌘R in browsers. Ctrl+F5 → hard refresh: ⌘⇧R in Edge/Chromium/
@@ -269,25 +266,20 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
         // as well because the external-keyboard swap turns physical Ctrl into
         // Command; catching it here also stops it toggling VoiceOver.
         if f5Refresh, code == kVK_F5, let browser = targetBrowser(event) {
-            if mods.isEmpty {
-                set(kVK_ANSI_R, .maskCommand)
-                return false
-            }
+            if mods.isEmpty { return .rewrite(code: kVK_ANSI_R, flags: .maskCommand) }
             if mods == .maskControl || mods == .maskCommand {
                 let hard: CGEventFlags = browser.hasPrefix("com.apple.Safari")
                     ? [.maskCommand, .maskAlternate] : [.maskCommand, .maskShift]
-                set(kVK_ANSI_R, hard)
-                return false
+                return .rewrite(code: kVK_ANSI_R, flags: hard)
             }
         }
 
         // Reopen last closed tab → ⌘⇧T in browsers.
         if reopenTab, code == Int(reopenTabTrigger.keyCode),
            mods == reopenTabTrigger.cgFlags, isBrowser(event) {
-            set(kVK_ANSI_T, [.maskCommand, .maskShift])
-            return false
+            return .rewrite(code: kVK_ANSI_T, flags: [.maskCommand, .maskShift])
         }
-        return false
+        return .pass
     }
 
     private func openActivityMonitor() {
@@ -368,8 +360,28 @@ private func keyboardCallback(proxy: CGEventTapProxy,
         feature.handleFlags(event)
     case .keyDown, .keyUp:
         feature.noteKey()
-        if feature.applyWindowsShortcuts(event, keyDown: type == .keyDown) { return nil }
-        feature.applyNavRules(event)
+        var outcome = feature.windowsShortcut(event, keyDown: type == .keyDown)
+        if case .pass = outcome { outcome = feature.navRule(event) }
+        switch outcome {
+        case .pass:
+            break
+        case .swallow:
+            return nil
+        case .rewrite(let code, let flags):
+            // Since macOS 26.6.x the window server re-derives a hardware-backed
+            // key event from its raw HID data after the tap stages run, so
+            // editing the key code / flags in place no longer sticks. Replace
+            // the event with a freshly built one instead (same fix as scroll).
+            guard let replacement = CGEvent(keyboardEventSource: nil,
+                                            virtualKey: CGKeyCode(code),
+                                            keyDown: type == .keyDown) else { break }
+            replacement.flags = flags
+            replacement.timestamp = event.timestamp
+            replacement.setIntegerValueField(.keyboardEventAutorepeat,
+                                             value: event.getIntegerValueField(.keyboardEventAutorepeat))
+            // The tap machinery releases the returned event; hand over our +1.
+            return Unmanaged.passRetained(replacement)
+        }
     default:
         break
     }

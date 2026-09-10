@@ -56,7 +56,10 @@ while it is on. The same as `caffeinate -d`, without the terminal window.
   accepted too, because the external-keyboard swap turns the physical Ctrl key
   into Command (this also stops `⌘F5` toggling VoiceOver while a browser is
   frontmost). On the built-in keyboard, `F5` needs the "F-keys as standard
-  function keys" tweak. Each rule is an independent toggle.
+  function keys" tweak. Each rule is an independent toggle. Like the scroll fix,
+  remapped keys are re-issued as fresh events rather than edited in place,
+  because macOS 26.6.x rebuilds hardware key events from raw HID data after
+  the tap and discards in-place edits.
 - **Tap to launch.** Tap a chosen modifier key alone to fire a launcher shortcut
   (Spotlight by default). Off by default.
 
