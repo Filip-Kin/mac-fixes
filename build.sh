@@ -9,7 +9,14 @@ BIN="MacFixes"
 BUILD="build"
 BUNDLE_ID="com.filipkin.macfixes"
 
-echo "Compiling (release)..."
+# Prefer Xcode's toolchain when installed: the standalone Command Line Tools
+# (27.x) ship the SDK but not the SwiftUI macro plugin, so SwiftUI code
+# fails to compile with "plugin for module 'SwiftUIMacros' not found".
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
+
+echo "Compiling (release) with $(xcrun --find swift 2>/dev/null || echo swift)..."
 swift build -c release
 
 echo "Assembling $APP..."

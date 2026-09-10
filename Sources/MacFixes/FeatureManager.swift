@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 
 /// Central owner of the background feature modules. Source of truth for their
 /// enabled state; persists to UserDefaults and starts/stops modules on toggle.
@@ -51,6 +52,21 @@ final class FeatureManager: ObservableObject {
         }
     }
 
+    /// Registered as a login item (System Settings > General > Login Items).
+    /// Defaults to on: the keyboard modifier swap for external keyboards is
+    /// applied by the running app, so it needs to be up at login.
+    @Published var launchAtLogin: Bool {
+        didSet {
+            defaults.set(launchAtLogin, forKey: "launchAtLogin")
+            do {
+                if launchAtLogin { try SMAppService.mainApp.register() }
+                else { try SMAppService.mainApp.unregister() }
+            } catch {
+                NSLog("launch at login: \(error)")
+            }
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -66,12 +82,15 @@ final class FeatureManager: ObservableObject {
         captureEnabled = defaults.bool(forKey: "captureEnabled")
         keyboardEnabled = defaults.bool(forKey: "keyboardEnabled")
         windowsEnabled = defaults.bool(forKey: "windowsEnabled")
+        launchAtLogin = SMAppService.mainApp.status == .enabled
 
         scroll.invertMouse = invertMouse
     }
 
     /// Start whatever should be running at launch.
     func bootstrap() {
+        // First launch: register as a login item unless the user has opted out.
+        if defaults.object(forKey: "launchAtLogin") == nil, !launchAtLogin { launchAtLogin = true }
         if scrollEnabled { _ = scroll.start() }
         if captureEnabled { _ = capture.start() }
         if keyboardEnabled { _ = keyboard.start() }

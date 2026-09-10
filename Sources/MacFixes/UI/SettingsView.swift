@@ -39,11 +39,11 @@ struct SettingsView: View {
                     switch pane ?? .scroll {
                     case .scroll: ScrollPane(features: features)
                     case .capture: CapturePane(features: features)
-                    case .keyboard: KeyboardPane(features: features)
+                    case .keyboard: KeyboardPane(features: features, swap: features.keyboard.modifierSwap)
                     case .windows: WindowsPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
-                    case .about: AboutPane()
+                    case .about: AboutPane(features: features)
                     }
                 }
                 .padding(24)
@@ -131,6 +131,7 @@ private struct CapturePane: View {
 
 private struct KeyboardPane: View {
     @ObservedObject var features: FeatureManager
+    @ObservedObject var swap: ModifierSwap
     @State private var refresh = false
 
     var body: some View {
@@ -142,6 +143,21 @@ private struct KeyboardPane: View {
                 get: { kb.swapModifiers }, set: { kb.swapModifiers = $0; refresh.toggle() }))
             Text("Makes the corner key act as Command so Ctrl+C/V/Z/S work the Windows way. External keyboards: Ctrl↔Command (Windows key becomes Control). Built-in: Fn→Command, Option→Globe, Command→Option, and Control stays Control (so Ctrl+C still kills terminal processes). Applied at the hardware level and reapplied on login and keyboard hot-plug.")
                 .font(.callout).foregroundStyle(.secondary)
+
+            ForEach(swap.conflicts) { conflict in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if conflict.awaitingReattach {
+                            Text("\(conflict.name): unplug it and plug it back in (or restart) to finish handing the remap to Mac Fixes.")
+                        } else {
+                            Text("\(conflict.name) has its own map in System Settings › Keyboard › Modifier Keys, so Mac Fixes is not remapping it. macOS stacks the two and they cancel out.")
+                            Button("Reset it to default and let Mac Fixes remap it") { swap.resetSystemSettingsMap(conflict) }
+                        }
+                    }
+                    .font(.callout)
+                }
+            }
 
             Divider()
 
@@ -289,9 +305,14 @@ private struct PermissionsPane: View {
 }
 
 private struct AboutPane: View {
+    @ObservedObject var features: FeatureManager
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             PaneHeader("Filip's Mac Fixes", "Small fixes for the things macOS gets wrong.")
+            Toggle("Launch at login", isOn: $features.launchAtLogin)
+            Text("Needed for the external-keyboard modifier swap to be in place after a restart.")
+                .font(.callout).foregroundStyle(.secondary)
+            Divider()
             Text("Free and open source. MIT licensed.").foregroundStyle(.secondary)
             Text("Each fix is an independent toggle. Nothing runs unless you turn it on.")
                 .font(.callout).foregroundStyle(.secondary)

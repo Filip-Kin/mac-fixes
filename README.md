@@ -22,7 +22,12 @@ the mouse (detected as a non-continuous scroll event).
   keyboards swap `Ctrl` and `Command` (the Windows key becomes Control); the
   built-in maps `Fn → Command`, `Option → Globe`, `Command → Option`, and leaves
   `Control` alone (so `Ctrl+C` still kills terminal processes). Applied at the
-  HID level with `hidutil`, reapplied at login and on keyboard hot-plug.
+  HID level with `hidutil`, per keyboard, reapplied at login, on wake and on
+  keyboard hot-plug. A keyboard that already has its own map in System
+  Settings > Keyboard > Modifier Keys is left alone, because macOS stacks the
+  two and two swaps cancel out; the app notifies you and offers a one-click
+  reset of that entry (takes effect when the keyboard is re-plugged), after
+  which it takes over. Decisions are logged to `~/Library/Logs/MacFixes.log`.
 - **Text navigation.** `Home`/`End` jump to line start/end, `Ctrl+Arrow` jumps by
   word, `Ctrl+Home`/`End` to document top/bottom, `Ctrl+Backspace` deletes the
   previous word. Each rule is an independent toggle.
@@ -65,9 +70,15 @@ default: instant Dock, scale minimize, no window animations, Finder hidden files
 and all extensions, fast key repeat, disable press-and-hold accents, and F-keys
 as standard function keys.
 
+### Launch at login
+
+On by default (toggle in the About pane). The external-keyboard modifier swap
+is applied by the running app, so it needs to be up at login.
+
 ## Build and install
 
-Requires the Swift toolchain (Xcode or Command Line Tools).
+Requires Xcode. The standalone Command Line Tools (27.x) lack the SwiftUI macro
+plugin, so `build.sh` uses Xcode's toolchain when it is installed.
 
 ```
 ./setup-signing.sh   # once: creates a self-signed identity so permission grants survive rebuilds
