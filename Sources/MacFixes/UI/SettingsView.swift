@@ -192,7 +192,7 @@ private struct KeyboardPane: View {
 
             Toggle("Windows-style modifier keys (persistent)", isOn: Binding(
                 get: { kb.swapModifiers }, set: { kb.swapModifiers = $0; refresh.toggle() }))
-            Text("Makes the corner key act as Command so Ctrl+C/V/Z/S work the Windows way. External keyboards: Ctrl↔Command (Windows key becomes Control). Built-in: Fn→Command, Option→Globe, Command→Option, and Control stays Control (so Ctrl+C still kills terminal processes). Applied at the hardware level and reapplied on login and keyboard hot-plug.")
+            Text("Makes the corner key act as Command so Ctrl+C/V/Z/S work the Windows way. External keyboards swap Ctrl↔Command; the built-in maps Fn→Command but leaves Control alone. Reapplied on login and hot-plug.")
                 .font(.callout).foregroundStyle(.secondary)
 
             ForEach(swap.conflicts) { conflict in
@@ -251,20 +251,20 @@ private struct KeyboardPane: View {
                 HotKeyButton(combo: kb.launcherCombo) { kb.launcherCombo = $0; refresh.toggle() }
             }
             .disabled(!features.keyboardEnabled || !kb.tapToLaunchEnabled)
-            Text("Tap the chosen key alone to fire the shortcut. Default shortcut is ⌘Space (Spotlight); set it to your launcher’s, e.g. Raycast. If you pick Globe, set System Settings → Keyboard → ‘Press 🌐 key to’ to ‘Do Nothing’ so it doesn’t also open emoji.")
+            Text("Tap the chosen key alone to fire the shortcut. Default is ⌘Space (Spotlight). If you pick Globe, set System Settings → Keyboard → ‘Press 🌐 key to’ to ‘Do Nothing’.")
                 .font(.callout).foregroundStyle(.secondary)
 
             Divider()
 
-            Toggle("Windows browser shortcuts (F5 refresh, Ctrl+F5 hard refresh)", isOn: Binding(
+            Toggle("Windows browser shortcuts (F5 refresh)", isOn: Binding(
                 get: { browsers.applied }, set: { $0 ? browsers.apply() : browsers.remove() }))
-            Text("Written as per-app shortcuts, the same thing System Settings › Keyboard › Keyboard Shortcuts › App Shortcuts does, so the browser handles the key itself. Takes effect the next time each browser is launched. Only menu items that exist can be bound.")
+            Text("Sets F5 to refresh in each installed browser (Safari also gets Ctrl+F5 for a hard refresh). Restart the browser to pick it up.")
                 .font(.callout).foregroundStyle(.secondary)
             if browsers.needsFullDiskAccess {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Could not write \(browsers.failedWrites.map { browsers.name(for: $0) }.sorted().joined(separator: ", ")). Safari keeps its shortcuts in a protected container, so Mac Fixes needs Full Disk Access to change them.")
+                        Text("Safari needs Full Disk Access before Mac Fixes can set its shortcuts.")
                         Button("Open Full Disk Access settings") {
                             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                                 NSWorkspace.shared.open(url)
@@ -274,22 +274,6 @@ private struct KeyboardPane: View {
                     .font(.callout)
                 }
             }
-            let installed = browsers.installed
-            if installed.isEmpty {
-                Text("No supported browser found (Edge, Safari, Chrome, Brave).").font(.callout).foregroundStyle(.secondary)
-            } else {
-                ForEach(installed) { b in
-                    HStack(alignment: .top) {
-                        Text(b.name).frame(width: 130, alignment: .leading)
-                        Text(browsers.entries(for: b).map { "\(BrowserShortcuts.describe($0.key)) \($0.title)" }.joined(separator: "   ·   ")
-                             + (b.verified ? "" : "   (titles not verified on this Mac)"))
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.callout)
-                }
-            }
-            Text("Edge’s regular and force-refresh menu items share a title, so Edge gets F5 only; on a swapped keyboard use Ctrl+Shift+R for a hard refresh (it arrives as ⌘⇧R). Ctrl+Shift+T reopens a tab everywhere already, so it isn’t set here. On a swapped external keyboard Ctrl+F5 arrives as ⌘F5, which macOS reserves for VoiceOver; Ctrl+F5 works as written on the built-in keyboard.")
-                .font(.callout).foregroundStyle(.secondary)
         }
         .id(refresh)
     }
