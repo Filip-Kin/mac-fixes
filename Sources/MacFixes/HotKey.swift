@@ -7,7 +7,7 @@ struct KeyCombo: Codable, Equatable {
     var keyCode: UInt32
     var modifiers: UInt32   // Carbon flags: cmdKey, optionKey, controlKey, shiftKey
 
-    /// Human-readable, e.g. "⌘⇧4".
+    /// Human-readable with Mac symbols, e.g. "⌘⇧4".
     var display: String {
         var s = ""
         if modifiers & UInt32(controlKey) != 0 { s += "⌃" }
@@ -18,15 +18,34 @@ struct KeyCombo: Codable, Equatable {
         return s
     }
 
+    /// Windows-style names, e.g. "Ctrl+Shift+4". Matches the modifier swap:
+    /// ⌘→Ctrl, ⌃→Win, ⌥→Alt, ⇧→Shift. Falls back to Mac symbols when off.
+    func display(windowsStyle: Bool) -> String {
+        guard windowsStyle else { return display }
+        var parts: [String] = []
+        if modifiers & UInt32(cmdKey)     != 0 { parts.append("Ctrl") }
+        if modifiers & UInt32(controlKey) != 0 { parts.append("Win") }
+        if modifiers & UInt32(optionKey)  != 0 { parts.append("Alt") }
+        if modifiers & UInt32(shiftKey)   != 0 { parts.append("Shift") }
+        parts.append(KeyCombo.keyName(keyCode))
+        return parts.joined(separator: "+")
+    }
+
     static func keyName(_ code: UInt32) -> String {
         switch Int(code) {
         case kVK_ANSI_0: return "0"; case kVK_ANSI_1: return "1"; case kVK_ANSI_2: return "2"
         case kVK_ANSI_3: return "3"; case kVK_ANSI_4: return "4"; case kVK_ANSI_5: return "5"
         case kVK_ANSI_6: return "6"; case kVK_ANSI_7: return "7"; case kVK_ANSI_8: return "8"
         case kVK_ANSI_9: return "9"
-        case kVK_Space: return "Space"; case kVK_Return: return "↩"; case kVK_Escape: return "⎋"
+        case kVK_Space: return "Space"; case kVK_Return: return "↩"; case kVK_Escape: return "Esc"
+        case kVK_Tab: return "⇥"; case kVK_Delete: return "⌫"; case kVK_ForwardDelete: return "⌦"
+        case kVK_LeftArrow: return "←"; case kVK_RightArrow: return "→"
+        case kVK_UpArrow: return "↑"; case kVK_DownArrow: return "↓"
+        case kVK_Home: return "Home"; case kVK_End: return "End"
+        case kVK_PageUp: return "PgUp"; case kVK_PageDown: return "PgDn"
         default:
-            // Letters and the rest: best effort via the current keyboard layout.
+            // Function keys, then letters and the rest via the keyboard layout.
+            if let f = functionNumber(Int(code)) { return "F\(f)" }
             return layoutName(code) ?? "key\(code)"
         }
     }

@@ -192,7 +192,7 @@ private struct KeyboardPane: View {
 
             Toggle("Windows-style modifier keys (persistent)", isOn: Binding(
                 get: { kb.swapModifiers }, set: { kb.swapModifiers = $0; refresh.toggle() }))
-            Text("Makes the corner key act as Command so Ctrl+C/V/Z/S work the Windows way. External keyboards swap Ctrl↔Command; the built-in maps Fn→Command but leaves Control alone. Reapplied on login and hot-plug.")
+            Text("Remaps modifiers for Windows muscle memory. External keyboards swap Ctrl↔Command. The built-in keyboard cycles Fn→Command, Command→Option, Option→Control, Control→Fn/Globe. Reapplied on login and hot-plug.")
                 .font(.callout).foregroundStyle(.secondary)
 
             ForEach(swap.conflicts) { conflict in
@@ -315,8 +315,12 @@ private struct WindowsPane: View {
                 .font(.callout).foregroundStyle(.secondary)
 
             Divider()
-            Text("Keyboard shortcuts (Control + Option):").fontWeight(.medium)
-            Text("Maximize ⌃⌥↩  ·  Halves ⌃⌥ ← → ↑ ↓  ·  Quarters ⌃⌥ U I J K  ·  Centre ⌃⌥ C")
+            let winKeys = features.keyboard.swapModifiers
+            Text(winKeys ? "Keyboard shortcuts (Win + Alt):" : "Keyboard shortcuts (Control + Option):")
+                .fontWeight(.medium)
+            Text(winKeys
+                 ? "Maximize Win+Alt+Enter  ·  Halves Win+Alt+ ← → ↑ ↓  ·  Quarters Win+Alt+ U I J K  ·  Centre Win+Alt+C"
+                 : "Maximize ⌃⌥↩  ·  Halves ⌃⌥ ← → ↑ ↓  ·  Quarters ⌃⌥ U I J K  ·  Centre ⌃⌥ C")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .id(refresh)

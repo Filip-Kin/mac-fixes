@@ -72,10 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let item = NSMenuItem(title: action.menuLabel, action: #selector(performCapture(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = action.id
-                if let combo = features.capture.shortcut(for: action).first {
-                    item.keyEquivalent = combo.appKitKeyEquivalent
-                    item.keyEquivalentModifierMask = combo.appKitModifiers
-                }
+                applyShortcut(to: item, features.capture.shortcut(for: action).first)
                 menu.addItem(item)
             }
         }
@@ -85,8 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if features.clipboardEnabled {
             let clip = NSMenuItem(title: "Clipboard History…", action: #selector(openClipboard), keyEquivalent: "")
             clip.target = self
-            clip.keyEquivalent = features.clipboard.hotKey.appKitKeyEquivalent
-            clip.keyEquivalentModifierMask = features.clipboard.hotKey.appKitModifiers
+            applyShortcut(to: clip, features.clipboard.hotKey)
             menu.addItem(clip)
         }
 
@@ -128,11 +124,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                shortcut: KeyCombo?, action: Selector) {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
-        if let shortcut {
-            item.keyEquivalent = shortcut.appKitKeyEquivalent
-            item.keyEquivalentModifierMask = shortcut.appKitModifiers
-        }
+        applyShortcut(to: item, shortcut)
         menu.addItem(item)
+    }
+
+    /// Shows a shortcut on a menu item. With the Windows-style swap on, the
+    /// shortcut is appended to the title in Windows key names (e.g. "Win+V"),
+    /// since NSMenuItem key equivalents can only render Mac glyphs. Off, it uses
+    /// the native gray right-aligned key equivalent. Either way it is display
+    /// only: the shortcut fires via the global Carbon hotkey / event tap.
+    private func applyShortcut(to item: NSMenuItem, _ combo: KeyCombo?) {
+        guard let combo else { return }
+        if features.keyboard.swapModifiers {
+            item.title += "   " + combo.display(windowsStyle: true)
+        } else {
+            item.keyEquivalent = combo.appKitKeyEquivalent
+            item.keyEquivalentModifierMask = combo.appKitModifiers
+        }
     }
 
     // MARK: Actions

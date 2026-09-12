@@ -10,8 +10,10 @@ struct HotKeyButton: View {
     @State private var recording = false
     @State private var monitor: Any?
 
+    private var swapOn: Bool { UserDefaults.standard.bool(forKey: "kbSwap") }
+
     var body: some View {
-        Button(recording ? "Press keys…" : combo.display) {
+        Button(recording ? "Press keys…" : combo.display(windowsStyle: swapOn)) {
             recording ? stop() : record()
         }
         .frame(minWidth: 120)
