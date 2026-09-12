@@ -108,12 +108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         let settings = NSMenuItem(title: "Settings…",
-                                  action: #selector(openSettings), keyEquivalent: ",")
+                                  action: #selector(openSettings), keyEquivalent: "")
         settings.target = self
         menu.addItem(settings)
 
         let quit = NSMenuItem(title: "Quit Filip's Mac Fixes",
-                              action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+                              action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         menu.addItem(quit)
     }
 
@@ -129,18 +129,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Shows a shortcut on a menu item. With the Windows-style swap on, the
-    /// shortcut is appended to the title in Windows key names (e.g. "Win+V"),
-    /// since NSMenuItem key equivalents can only render Mac glyphs. Off, it uses
-    /// the native gray right-aligned key equivalent. Either way it is display
+    /// shortcut is drawn in Windows key names (e.g. "Win+V") via an attributed
+    /// title: a right-aligned tab stop pushes it to the edge and greys it, to
+    /// match the native look (NSMenuItem key equivalents can only render Mac
+    /// glyphs). Off, it uses the native key equivalent. Either way it is display
     /// only: the shortcut fires via the global Carbon hotkey / event tap.
     private func applyShortcut(to item: NSMenuItem, _ combo: KeyCombo?) {
         guard let combo else { return }
-        if features.keyboard.swapModifiers {
-            item.title += "   " + combo.display(windowsStyle: true)
-        } else {
+        guard features.keyboard.swapModifiers else {
             item.keyEquivalent = combo.appKitKeyEquivalent
             item.keyEquivalentModifierMask = combo.appKitModifiers
+            return
         }
+        let shortcut = combo.display(windowsStyle: true)
+        let para = NSMutableParagraphStyle()
+        para.tabStops = [NSTextTab(textAlignment: .right, location: 220)]
+        let font = NSFont.menuFont(ofSize: 0)
+        let attr = NSMutableAttributedString(
+            string: "\(item.title)\t\(shortcut)",
+            attributes: [.font: font, .paragraphStyle: para])
+        let scStart = (item.title as NSString).length + 1   // +1 for the tab
+        attr.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor,
+                          range: NSRange(location: scStart, length: (shortcut as NSString).length))
+        item.attributedTitle = attr
     }
 
     // MARK: Actions
