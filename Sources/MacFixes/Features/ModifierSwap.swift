@@ -10,8 +10,8 @@ import AppKit
 ///
 ///  - External PC keyboards: Ctrl <-> Command, so the corner Ctrl acts as
 ///    Command and the Windows key acts as Control. Alt stays Option.
-///  - Built-in MacBook keyboard (its corner is Fn): Fn -> Command, Ctrl stays
-///    Control, Option -> Fn/Globe, Command -> Option.
+///  - Built-in MacBook keyboard (its corner is Fn): a four-key cycle,
+///    Fn -> Command, Command -> Option, Option -> Control, Control -> Fn/Globe.
 ///
 /// Stacking rule: macOS applies the per-keyboard map from System Settings >
 /// Keyboard > Modifier Keys first and the hidutil `UserKeyMapping` on top of
@@ -39,9 +39,10 @@ final class ModifierSwap: NSObject, ObservableObject, UNUserNotificationCenterDe
     private let externalMapping =
         #"{"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":0x7000000E0,"HIDKeyboardModifierMappingDst":0x7000000E3},{"HIDKeyboardModifierMappingSrc":0x7000000E3,"HIDKeyboardModifierMappingDst":0x7000000E0}]}"#
 
-    // Built-in: Fn(0xFF00000003)->Command(E3), Option(E2)->Fn, Command(E3)->Option(E2).
+    // Built-in four-key cycle: Fn(0xFF00000003)->Command(E3), Command(E3)->Option(E2),
+    // Option(E2)->Control(E0), Control(E0)->Fn(0xFF00000003).
     private let builtinMapping =
-        #"{"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":0xFF00000003,"HIDKeyboardModifierMappingDst":0x7000000E3},{"HIDKeyboardModifierMappingSrc":0x7000000E2,"HIDKeyboardModifierMappingDst":0xFF00000003},{"HIDKeyboardModifierMappingSrc":0x7000000E3,"HIDKeyboardModifierMappingDst":0x7000000E2}]}"#
+        #"{"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":0xFF00000003,"HIDKeyboardModifierMappingDst":0x7000000E3},{"HIDKeyboardModifierMappingSrc":0x7000000E3,"HIDKeyboardModifierMappingDst":0x7000000E2},{"HIDKeyboardModifierMappingSrc":0x7000000E2,"HIDKeyboardModifierMappingDst":0x7000000E0},{"HIDKeyboardModifierMappingSrc":0x7000000E0,"HIDKeyboardModifierMappingDst":0xFF00000003}]}"#
 
     private let emptyMapping = #"{"UserKeyMapping":[]}"#
 
