@@ -6,6 +6,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case clipboard = "Clipboard"
     case keyboard = "Keyboard"
     case windows = "Windows"
+    case taskbar = "Taskbar"
     case tweaks = "System Tweaks"
     case permissions = "Permissions"
     case about = "About"
@@ -18,6 +19,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .clipboard: return "doc.on.clipboard"
         case .keyboard: return "keyboard"
         case .windows: return "macwindow"
+        case .taskbar: return "dock.rectangle"
         case .tweaks: return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .about: return "info.circle"
@@ -44,6 +46,7 @@ struct SettingsView: View {
                     case .clipboard: ClipboardPane(features: features, clip: features.clipboard)
                     case .keyboard: KeyboardPane(features: features, swap: features.keyboard.modifierSwap, browsers: features.browserShortcuts)
                     case .windows: WindowsPane(features: features)
+                    case .taskbar: TaskbarPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
                     case .about: AboutPane(features: features)
@@ -308,6 +311,8 @@ private struct WindowsPane: View {
                     .padding(.leading, 20)
                 toggle("Closing the last window quits the app",
                        get: { win.closeQuitsEnabled }, set: { win.closeQuitsEnabled = $0 })
+                toggle("Double-click the title bar to maximize (our fill, not macOS zoom)",
+                       get: { win.titlebarMaximizeEnabled }, set: { win.titlebarMaximizeEnabled = $0 })
             }
             .disabled(!features.windowsEnabled)
 
@@ -329,6 +334,26 @@ private struct WindowsPane: View {
     private func toggle(_ label: String, get: @escaping @Sendable () -> Bool,
                         set: @escaping @Sendable (Bool) -> Void) -> some View {
         Toggle(label, isOn: Binding(get: get, set: { set($0); refresh.toggle() }))
+    }
+}
+
+private struct TaskbarPane: View {
+    @ObservedObject var features: FeatureManager
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PaneHeader("Taskbar", "A Windows-style bar along the bottom of the screen showing open apps.")
+            Toggle("Enable taskbar", isOn: $features.taskbarEnabled)
+            Text("Click an icon to switch; right-click for New Window or Quit; hover an app with several windows to pick one. The active app is highlighted, and Apple’s auto-launched Tips app is hidden. To use it as your only taskbar, set the macOS Dock to auto-hide in System Settings › Desktop & Dock.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Divider()
+            Toggle("Start menu (tap the Windows key)", isOn: $features.startMenuEnabled)
+            Text("Tap the Windows key on its own to open a search box, type an app name, and press Return to launch it. Apps only — no dictionary or web results. Works with the external-keyboard swap, where the Windows key sends Control.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Text("Coming next: pinning your own apps, and auto-hide vs. reserved-space modes.")
+                .font(.callout).foregroundStyle(.tertiary)
+        }
     }
 }
 

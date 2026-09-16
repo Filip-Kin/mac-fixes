@@ -2,7 +2,7 @@
 
 A small, free, open-source menu-bar app that fixes the things about macOS that
 annoy me. Every fix is an independent toggle; nothing runs unless you turn it
-on. Built for macOS 26 (Tahoe) on Apple Silicon.
+on. Built for macOS 26–27 (Tahoe) on Apple Silicon.
 
 It exists because good tools for these fixes are either paid (mac-mouse-fix,
 Shottr) or do far more than I need. This does only what I use.
@@ -37,8 +37,10 @@ while it is on. The same as `caffeinate -d`, without the terminal window.
 - **Modifier swap** (persistent, per-device). Makes the corner key act as
   Command so `Ctrl+C/V/Z/S` work the Windows way on every keyboard. External
   keyboards swap `Ctrl` and `Command` (the Windows key becomes Control); the
-  built-in maps `Fn → Command`, `Option → Globe`, `Command → Option`, and leaves
-  `Control` alone (so `Ctrl+C` still kills terminal processes). Applied at the
+  built-in keyboard runs a four-key cycle `Fn → Command`, `Command → Option`,
+  `Option → Control`, `Control → Fn/Globe`, so the corner keys line up with a
+  Windows laptop and the physical Control key becomes Fn/Globe (making
+  `Fn+Arrow` act as Home / End / Page Up / Page Down). Applied at the
   HID level with `hidutil`, per keyboard, reapplied at login, on wake and on
   keyboard hot-plug. A keyboard that already has its own map in System
   Settings > Keyboard > Modifier Keys is left alone, because macOS stacks the
@@ -76,6 +78,30 @@ while it is on. The same as `caffeinate -d`, without the terminal window.
   both at once.
 - **Close quits the app.** When a regular app's last window closes, quit it
   (Windows-like). Finder is always left alone. Off by default.
+- **Double-click the title bar to maximize** with the taskbar-aware fill instead
+  of macOS zoom. An event tap swallows the double-click so the OS action never
+  flashes first. Off by default.
+
+### Taskbar
+
+A Windows-style taskbar along the bottom of the screen showing open apps, so you
+can see and switch what's running without a giant Dock. Click an icon to switch;
+right-click for New Window or Quit; hover an app with several windows to pick one
+from a list. A Start button sits at the left. Finder appears as a File Explorer
+button that opens a fresh window on click. Window snapping (maximize, halves,
+quarters, drag-snap) reserves the taskbar's strip so windows stop above it rather
+than sliding under. Apple's auto-launched Tips app is hidden. Off by default; to
+use it as your only taskbar, set the macOS Dock to auto-hide.
+
+### Start menu
+
+Tap the Windows key on its own to open a search box; type an app or folder name
+and press Return to launch it. Apps and common folders (Downloads, Documents,
+Desktop…) only — no dictionary or web results, so it never opens the wrong thing.
+Results rank by how often you launch them from here, so it sharpens over time. A
+footer row has quick buttons for System Settings, Sleep, Restart and Shut Down.
+Opens from the taskbar's Start button too, and returns focus to where you were
+when you close it without launching. Off by default.
 
 ### Screen capture
 

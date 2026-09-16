@@ -33,6 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Restore any OS settings we changed (e.g. the title-bar double-click
+        // action) so quitting doesn't leave the system altered.
+        features.windows.stop()
+    }
+
     private func updateStatusIcon() {
         let recording = features.capture.isRecording
         let awake = KeepAwake.shared.isActive

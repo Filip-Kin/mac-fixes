@@ -26,7 +26,7 @@ final class WindowObservers: @unchecked Sendable {
         guard timer == nil else { return }
         // Seed with current counts so apps that already have no windows aren't quit.
         lastCounts = currentCounts()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.poll()
         }
     }

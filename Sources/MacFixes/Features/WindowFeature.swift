@@ -32,6 +32,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
     private let observers = WindowObservers()
     private let seams = SeamResizer()
     private let focus = FocusFollows()
+    private let titlebar = TitlebarMaximize()
 
     // Sub-toggles (default true except the intrusive ones).
     var snappingEnabled: Bool { get { flag("winSnapping", true) } set { setFlag("winSnapping", newValue) } }
@@ -67,6 +68,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
     }
     var closeQuitsEnabled: Bool { get { flag("winCloseQuits", false) } set { setFlag("winCloseQuits", newValue) } }
     var dividerResizeEnabled: Bool { get { flag("winDividerResize", true) } set { setFlag("winDividerResize", newValue) } }
+    var titlebarMaximizeEnabled: Bool { get { flag("winTitlebarMax", false) } set { setFlag("winTitlebarMax", newValue) } }
     var focusFollowsEnabled: Bool { get { flag("winFocusFollows", false) } set { setFlag("winFocusFollows", newValue) } }
     var focusRaises: Bool { get { flag("winFocusRaises", true) } set { setFlag("winFocusRaises", newValue) } }
 
@@ -107,6 +109,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
         snapper.stop()
         seams.stop()
         focus.stop()
+        titlebar.stop()
         observers.stop()
     }
 
@@ -117,6 +120,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
         if dividerResizeEnabled { seams.start() } else { seams.stop() }
         focus.raise = focusRaises
         if focusFollowsEnabled { focus.start() } else { focus.stop() }
+        titlebarMaximizeEnabled ? titlebar.start() : titlebar.stop()
         observers.configure(closeQuits: closeQuitsEnabled)
     }
 
@@ -149,6 +153,9 @@ final class SnapController: @unchecked Sendable {
     private var pending: CGRect?            // AX-coords target for mouse-up
     private var pendingWindow: AXUIElement? // the window being dragged
     private let threshold: CGFloat = 6
+    // The top (maximize) zone is deeper — it is the one people aim for most, and
+    // a fast flick to the top pins the cursor at the edge a little short of it.
+    private let topThreshold: CGFloat = 44
 
     func start() {
         guard dragMonitor == nil else { return }
@@ -167,37 +174,43 @@ final class SnapController: @unchecked Sendable {
     }
 
     private func dragged() {
-        let cursor = NSEvent.mouseLocation  // bottom-left global coords
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(cursor) }) else {
-            pending = nil; hidePreview(); return
+        guard let (target, win) = evaluate(at: NSEvent.mouseLocation) else {
+            pending = nil; pendingWindow = nil; hidePreview(); return
         }
+        pending = target
+        pendingWindow = win
+        showPreview(AXWindow.toBottomLeft(target))
+    }
+
+    /// The snap zone for a cursor position, if any.
+    private func zone(_ cursor: CGPoint, _ screen: NSScreen) -> WindowPosition? {
         let f = screen.frame
         let nearLeft   = cursor.x <= f.minX + threshold
         let nearRight  = cursor.x >= f.maxX - threshold
-        let nearTop    = cursor.y >= f.maxY - threshold
+        let nearTop    = cursor.y >= f.maxY - topThreshold
         let nearBottom = cursor.y <= f.minY + threshold
-
-        let pos: WindowPosition?
         switch true {
-        case nearTop && nearLeft:     pos = .topLeft
-        case nearTop && nearRight:    pos = .topRight
-        case nearBottom && nearLeft:  pos = .bottomLeft
-        case nearBottom && nearRight: pos = .bottomRight
-        case nearTop:                 pos = .maximize
-        case nearLeft:                pos = .leftHalf
-        case nearRight:               pos = .rightHalf
-        default:                      pos = nil
+        case nearTop && nearLeft:     return .topLeft
+        case nearTop && nearRight:    return .topRight
+        case nearBottom && nearLeft:  return .bottomLeft
+        case nearBottom && nearRight: return .bottomRight
+        case nearTop:                 return .maximize
+        case nearLeft:                return .leftHalf
+        case nearRight:               return .rightHalf
+        default:                      return nil
         }
+    }
 
-        guard let pos else { pending = nil; pendingWindow = nil; hidePreview(); return }
+    /// The AX target rect and window for a cursor position, or nil if it is not
+    /// in a snap zone. Recomputed fresh so a fast flick that never fired a drag
+    /// event at the edge still snaps on release.
+    private func evaluate(at cursor: CGPoint) -> (CGRect, AXUIElement)? {
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(cursor) }) ?? NSScreen.main,
+              let pos = zone(cursor, screen),
+              let win = AXWindow.frontmostWindow() else { return nil }
         let vf = AXWindow.axVisibleFrame(screen)
-        let win = AXWindow.frontmostWindow()
-        let draggedFrame = win.flatMap { AXWindow.frame(of: $0) }
-        let occupied = AXWindow.onScreenWindowFrames(excluding: draggedFrame, intersecting: vf)
-        let axTarget = Self.adaptiveTarget(pos, vf: vf, occupied: occupied)
-        pending = axTarget
-        pendingWindow = win
-        showPreview(AXWindow.toBottomLeft(axTarget))
+        let occupied = AXWindow.onScreenWindowFrames(excluding: AXWindow.frame(of: win), intersecting: vf)
+        return (Self.adaptiveTarget(pos, vf: vf, occupied: occupied), win)
     }
 
     /// Fill the space left by other windows: left/right take the gap up to the

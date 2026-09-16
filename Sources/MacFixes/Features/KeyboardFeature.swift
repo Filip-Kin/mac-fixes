@@ -194,6 +194,10 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
             return .rewrite(code: kVK_RightArrow, flags: base.union(.maskAlternate))
         case kVK_Delete where cmd && wordDelete:
             return .rewrite(code: kVK_Delete, flags: base.union(.maskAlternate))
+        case kVK_ANSI_KeypadEnter:
+            // Numpad Enter -> Return, so apps that ignore the keypad key fire.
+            return .rewrite(code: kVK_Return,
+                            flags: flags.intersection(KeyboardFeature.chordMask))
         default:
             return .pass
         }

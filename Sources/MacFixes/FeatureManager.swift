@@ -15,6 +15,8 @@ final class FeatureManager: ObservableObject {
     let browserShortcuts = BrowserShortcuts()
     let windows = WindowFeature()
     let tweaks = SystemTweaks()
+    let taskbar = TaskbarFeature()
+    let startMenu = StartMenuFeature()
 
     // MARK: Persisted feature state
 
@@ -61,6 +63,20 @@ final class FeatureManager: ObservableObject {
         }
     }
 
+    @Published var taskbarEnabled: Bool {
+        didSet {
+            defaults.set(taskbarEnabled, forKey: "taskbarEnabled")
+            apply(taskbar, enabled: taskbarEnabled)
+        }
+    }
+
+    @Published var startMenuEnabled: Bool {
+        didSet {
+            defaults.set(startMenuEnabled, forKey: "startMenuEnabled")
+            apply(startMenu, enabled: startMenuEnabled)
+        }
+    }
+
     /// Registered as a login item (System Settings > General > Login Items).
     /// Defaults to on: the keyboard modifier swap for external keyboards is
     /// applied by the running app, so it needs to be up at login.
@@ -93,6 +109,8 @@ final class FeatureManager: ObservableObject {
         clipboardEnabled = defaults.bool(forKey: "clipboardEnabled")
         keyboardEnabled = defaults.bool(forKey: "keyboardEnabled")
         windowsEnabled = defaults.bool(forKey: "windowsEnabled")
+        taskbarEnabled = defaults.bool(forKey: "taskbarEnabled")
+        startMenuEnabled = defaults.bool(forKey: "startMenuEnabled")
         launchAtLogin = SMAppService.mainApp.status == .enabled
 
         scroll.invertMouse = invertMouse
@@ -100,6 +118,11 @@ final class FeatureManager: ObservableObject {
 
     /// Start whatever should be running at launch.
     func bootstrap() {
+        // The taskbar's Start button opens the Start menu.
+        taskbar.setStartAction { [weak self] in
+            guard let self else { return }
+            MainActor.assumeIsolated { self.startMenu.toggle() }
+        }
         // First launch: register as a login item unless the user has opted out.
         if defaults.object(forKey: "launchAtLogin") == nil, !launchAtLogin { launchAtLogin = true }
         if scrollEnabled { _ = scroll.start() }
@@ -107,6 +130,8 @@ final class FeatureManager: ObservableObject {
         if clipboardEnabled { _ = clipboard.start() }
         if keyboardEnabled { _ = keyboard.start() }
         if windowsEnabled { _ = windows.start() }
+        if taskbarEnabled { _ = taskbar.start() }
+        if startMenuEnabled { _ = startMenu.start() }
         // Reapply the persistent modifier swap and start its hot-plug watcher,
         // even if the event-tap part of the keyboard feature is off.
         keyboard.modifierSwap.reapplyIfEnabled()

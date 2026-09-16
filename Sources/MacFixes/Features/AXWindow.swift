@@ -60,6 +60,34 @@ enum AXWindow {
         return nil
     }
 
+    /// An app's standard windows as (element, title), in AX front-to-back order.
+    /// Skips sheets, popovers and other non-standard windows.
+    static func windowList(pid: pid_t) -> [(element: AXUIElement, title: String)] {
+        let app = AXUIElementCreateApplication(pid)
+        var winsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &winsRef) == .success,
+              let arr = winsRef as? [AXUIElement] else { return [] }
+        var out: [(AXUIElement, String)] = []
+        for w in arr {
+            var subroleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(w, kAXSubroleAttribute as CFString, &subroleRef)
+            if let sub = subroleRef as? String, sub != (kAXStandardWindowSubrole as String) { continue }
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(w, kAXTitleAttribute as CFString, &titleRef)
+            let raw = (titleRef as? String) ?? ""
+            out.append((w, raw.isEmpty ? "Untitled" : raw))
+        }
+        return out
+    }
+
+    /// Bring one specific window to the front (and its app with it).
+    static func raise(_ window: AXUIElement, pid: pid_t) {
+        NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+        AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+    }
+
     static func frame(of window: AXUIElement) -> CGRect? {
         guard let pos = value(window, kAXPositionAttribute, .cgPoint, CGPoint.self),
               let size = value(window, kAXSizeAttribute, .cgSize, CGSize.self)
@@ -89,9 +117,15 @@ enum AXWindow {
     }
 
     /// A screen's usable area (minus menu bar and Dock) in AX coordinates.
+    /// Also excludes the taskbar's reserved strip so snapped windows stop above
+    /// it instead of sliding underneath.
     static func axVisibleFrame(_ screen: NSScreen) -> CGRect {
         let vf = screen.visibleFrame
-        return CGRect(x: vf.minX, y: primaryHeight - vf.maxY, width: vf.width, height: vf.height)
+        var rect = CGRect(x: vf.minX, y: primaryHeight - vf.maxY, width: vf.width, height: vf.height)
+        if TaskbarLayout.reserves(screen) {
+            rect.size.height = max(0, rect.size.height - TaskbarLayout.bottomInset)
+        }
+        return rect
     }
 
     /// Convert an AX (top-left origin) rect to NSScreen (bottom-left) coords.
