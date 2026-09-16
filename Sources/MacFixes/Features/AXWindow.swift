@@ -1,6 +1,11 @@
 import AppKit
 import ApplicationServices
 
+/// Private HIServices call that returns an AX window element's CGWindowID —
+/// the only reliable way to tell apart same-size stacked windows of one app.
+@_silgen_name("_AXUIElementGetWindow")
+private func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 /// Accessibility helpers for moving and resizing windows.
 ///
 /// The AX coordinate space has its origin at the top-left of the primary
@@ -129,6 +134,19 @@ enum AXWindow {
                   rect.width >= 80, rect.height >= 80 else { continue }
             if (w[kCGWindowOwnerName as String] as? String) == "Filip's Mac Fixes" { continue }
             out.append((n, pid, (w[kCGWindowName as String] as? String) ?? "", rect))
+        }
+        return out
+    }
+
+    /// An app's AX window elements keyed by their exact CGWindowID, so stacked
+    /// same-size windows map to distinct elements.
+    static func axWindowsByID(pid: pid_t) -> [CGWindowID: AXUIElement] {
+        var out: [CGWindowID: AXUIElement] = [:]
+        for e in windowList(pid: pid) {
+            var wid: CGWindowID = 0
+            if _AXUIElementGetWindow(e.element, &wid) == .success, wid != 0 {
+                out[wid] = e.element
+            }
         }
         return out
     }

@@ -162,15 +162,16 @@ final class StartMenuFeature: Feature, @unchecked Sendable {
             return handled ? nil : e
         }
         // A click in any other app (global monitor never fires for our own
-        // panel) means the user clicked away — close.
+        // panel) means the user clicked away — close, but keep the focus that
+        // click just gave them (only a key-close restores the previous app).
         clickAwayMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.close(restoringFocus: true) }
+            MainActor.assumeIsolated { self?.close(restoringFocus: false) }
         }
         // A click in one of our own other windows (the taskbar) also closes it.
         taskbarClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] e in
             guard let self else { return e }
             if e.window !== self.panel {
-                MainActor.assumeIsolated { self.close(restoringFocus: true) }
+                MainActor.assumeIsolated { self.close(restoringFocus: false) }
             }
             return e
         }
@@ -317,22 +318,24 @@ final class StartMenuModel: ObservableObject, @unchecked Sendable {
         guard !q.isEmpty else { results = defaultResults(); lastScored = []; return }
 
         var scored: [(SearchResult, Int)] = []
+        // Scores are banded so kind wins first: calc > apps/settings > files.
+        // That keeps a random file from outranking a matching app.
         // Calculator — floats to the top when the query is an expression.
         if let v = Calc.eval(q) {
             let text = Calc.format(v)
             scored.append((SearchResult(id: "calc", title: text, subtitle: "Calculator — Return to copy",
                                         kind: .calculation, iconPath: nil, symbol: "equal.square",
-                                        action: .copy(text)), 5000))
+                                        action: .copy(text)), 2_000_000))
         }
         // Apps and folders.
         for app in index {
             guard let s = Self.fuzzyScore(q, app.name) else { continue }
-            scored.append((appResult(app), s + min(rank(app.id), 25) * 6))
+            scored.append((appResult(app), 100_000 + s + min(rank(app.id), 25) * 6))
         }
-        // System Settings panes (slightly below a matching app).
+        // System Settings panes (same band as apps, just below a matching app).
         for pane in Self.settingsPanes {
             guard let s = Self.bestScore(q, pane.title, pane.keywords) else { continue }
-            scored.append((settingResult(pane), s - 30 + min(rank("set:" + pane.url), 25) * 6))
+            scored.append((settingResult(pane), 100_000 + s - 30 + min(rank("set:" + pane.url), 25) * 6))
         }
         lastScored = scored
         results = topResults(scored)
@@ -342,7 +345,9 @@ final class StartMenuModel: ObservableObject, @unchecked Sendable {
     private func rank(_ id: String) -> Int { usage[id] ?? 0 }
 
     private func topResults(_ scored: [(SearchResult, Int)]) -> [SearchResult] {
-        scored.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.title.count < $1.0.title.count }
+        var seen = Set<String>()
+        return scored.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.title.count < $1.0.title.count }
+            .filter { seen.insert($0.0.id).inserted }
             .prefix(9).map(\.0)
     }
 
@@ -372,17 +377,21 @@ final class StartMenuModel: ObservableObject, @unchecked Sendable {
             let paths = Self.mdfind(q)
             await MainActor.run {
                 guard let self, gen == self.searchGen else { return }   // query moved on
-                let fileScored: [(SearchResult, Int)] = paths.prefix(8).compactMap { path in
+                let indexPaths = Set(self.index.map { $0.url.path })
+                var fileScored: [(SearchResult, Int)] = []
+                for path in paths {
+                    if path.hasSuffix(".app") { continue }        // apps come from the index
+                    if indexPaths.contains(path) { continue }     // no duplicates of indexed items
                     let name = (path as NSString).lastPathComponent
-                    guard let s = Self.fuzzyScore(q, name) else { return nil }
+                    guard let s = Self.fuzzyScore(q, name) else { continue }
                     let url = URL(fileURLWithPath: path)
                     var isDir: ObjCBool = false
                     FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
-                    return (SearchResult(id: "file:" + path, title: name,
+                    fileScored.append((SearchResult(id: "file:" + path, title: name,
                                          subtitle: (path as NSString).deletingLastPathComponent,
                                          kind: isDir.boolValue ? .folder : .file, iconPath: path, symbol: nil,
-                                         action: isDir.boolValue ? .openFolder(url) : .openFile(url)),
-                            s - 250)   // files rank below apps/settings
+                                         action: isDir.boolValue ? .openFolder(url) : .openFile(url)), s))
+                    if fileScored.count >= 8 { break }
                 }
                 self.results = self.topResults(self.lastScored + fileScored)
             }
@@ -630,8 +639,7 @@ private struct StartMenuView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .glassPanel(14)
         .onChange(of: model.focusTick) { searchFocused = true }
         .onAppear { searchFocused = true }
     }

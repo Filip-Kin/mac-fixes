@@ -92,9 +92,11 @@ icons to reorder (pinned order persists). Pinned apps stay on the bar even when
 closed and launch on click. A Start button sits at the left, and Finder appears
 as a File Explorer button that opens a fresh window on click (its indicator only
 shows when it actually has a window open). Window snapping reserves the taskbar's
-strip so windows stop above it. Right-click empty space for Taskbar settings.
-Optionally shows on every monitor. A separate switch hides the macOS Dock
-entirely. Apple's auto-launched Tips app is hidden. Off by default.
+strip so windows stop above it. A clock sits on the right (system, 24-hour or ISO
+format) and opens a calendar popup on click. Right-click empty space for Taskbar
+settings. Optionally shows on every monitor. A separate switch hides the macOS
+Dock entirely. Apple's auto-launched Tips app is hidden. Surfaces use macOS 26
+Liquid Glass. Off by default.
 
 ### Start menu
 

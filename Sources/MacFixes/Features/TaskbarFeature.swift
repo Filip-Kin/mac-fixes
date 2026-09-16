@@ -39,6 +39,8 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
     // Touched only on the main actor (via assumeIsolated below).
     private var panels: [TaskbarPanel] = []
     private var peekPanel: PeekPanel?
+    private var calendarPanel: CalendarPanel?
+    private var calMonitor: Any?
     private let model = TaskbarModel()
     private var allScreens: Bool { UserDefaults.standard.bool(forKey: "taskbarAllScreens") }
 
@@ -66,6 +68,9 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
             model.onPeekChange = { [weak self] state in
                 MainActor.assumeIsolated { self?.updatePeek(state) }
             }
+            model.onClockClick = { [weak self] in
+                MainActor.assumeIsolated { self?.toggleCalendar() }
+            }
             placePanels()
             return true
         }
@@ -76,11 +81,38 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
             model.stopTracking()
             peekPanel?.orderOut(nil)
             peekPanel = nil
+            closeCalendar()
+            calendarPanel = nil
             for p in panels { p.orderOut(nil) }
             panels = []
             TaskbarLayout.bottomInset = 0
             TaskbarLayout.reservedDisplays = []
         }
+    }
+
+    // MARK: Calendar popup
+
+    @MainActor
+    private func toggleCalendar() {
+        if calendarPanel?.isVisible == true { closeCalendar(); return }
+        let p = calendarPanel ?? CalendarPanel()
+        calendarPanel = p
+        let cursor = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(cursor) })
+            ?? NSScreen.main ?? NSScreen.screens.first else { return }
+        let f = screen.frame
+        let w: CGFloat = 260, h: CGFloat = 290
+        p.setFrame(NSRect(x: f.maxX - w - 12, y: f.minY + TaskbarMetrics.barHeight + 8, width: w, height: h), display: true)
+        p.orderFrontRegardless()
+        calMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.closeCalendar() }
+        }
+    }
+
+    @MainActor
+    private func closeCalendar() {
+        if let m = calMonitor { NSEvent.removeMonitor(m); calMonitor = nil }
+        calendarPanel?.orderOut(nil)
     }
 
     /// Re-place the bars when the "all screens" setting or the display layout
@@ -152,6 +184,7 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     var onPeekChange: ((Peek?) -> Void)?
     var onStartButton: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onClockClick: (() -> Void)?
 
     struct TaskbarWindow: Identifiable {
         let id: Int
@@ -557,10 +590,11 @@ struct TaskbarView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .onDrop(of: [.text], delegate: TaskbarEndDropDelegate(model: model, draggingId: $draggingId))
+            TaskbarClock { model.onClockClick?() }
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial)
+        .background(VisualEffectBackground())      // consistent, focus-independent
         .contextMenu { Button("Taskbar Settings…") { model.onOpenSettings?() } }
     }
 }
@@ -595,6 +629,77 @@ private struct TaskbarEndDropDelegate: DropDelegate {
     }
 }
 
+/// Clock format, read from UserDefaults; "system" follows the Mac's own setting
+/// (including 24-hour), other values are explicit `DateFormatter` templates.
+enum ClockFormat {
+    static func time(_ date: Date) -> String { render(date, key: "clockTimeFormat",
+        system: { $0.formatted(.dateTime.hour().minute()) }) }
+    static func date(_ date: Date) -> String { render(date, key: "clockDateFormat",
+        system: { $0.formatted(.dateTime.day().month(.defaultDigits).year()) }) }
+
+    private static func render(_ date: Date, key: String, system: (Date) -> String) -> String {
+        let f = UserDefaults.standard.string(forKey: key) ?? "system"
+        if f == "system" { return system(date) }
+        let df = DateFormatter(); df.dateFormat = f
+        return df.string(from: date)
+    }
+}
+
+/// The taskbar clock: time over date, right-aligned. Click opens the calendar.
+private struct TaskbarClock: View {
+    let onClick: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onClick) {
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text(ClockFormat.time(ctx.date))
+                        .font(.system(size: 13, weight: .medium))
+                    Text(ClockFormat.date(ctx.date))
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(Color.primary.opacity(hovering ? 0.10 : 0)))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// The Windows-11-style logo: four squares, each with only its outer corner
+/// rounded, filled with a subtle blue gradient.
+private struct WindowsGrid: View {
+    private let gap: CGFloat = 2
+    private let r: CGFloat = 3.5
+
+    var body: some View {
+        // One gradient across the whole logo (top-left lightest, bottom-right
+        // darkest), revealed through the four squares.
+        LinearGradient(
+            colors: [Color(red: 0.55, green: 0.87, blue: 0.98),
+                     Color(red: 0.22, green: 0.45, blue: 0.72)],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+        .mask(
+            VStack(spacing: gap) {
+                HStack(spacing: gap) { square(topLeading: r);    square(topTrailing: r) }
+                HStack(spacing: gap) { square(bottomLeading: r); square(bottomTrailing: r) }
+            }
+        )
+    }
+
+    private func square(topLeading: CGFloat = 0, topTrailing: CGFloat = 0,
+                        bottomLeading: CGFloat = 0, bottomTrailing: CGFloat = 0) -> some View {
+        UnevenRoundedRectangle(cornerRadii: .init(
+            topLeading: topLeading, bottomLeading: bottomLeading,
+            bottomTrailing: bottomTrailing, topTrailing: topTrailing))
+            .fill(Color.black)
+    }
+}
+
 /// The Start button at the left of the taskbar. Opens the Start menu.
 private struct StartButton: View {
     let onClick: () -> Void
@@ -602,10 +707,9 @@ private struct StartButton: View {
 
     var body: some View {
         Button(action: onClick) {
-            Image(systemName: "square.grid.2x2.fill")
-                .font(.system(size: 20))
-                .foregroundStyle(Color(red: 0.30, green: 0.76, blue: 1.0))   // light blue, better contrast
-                .frame(width: 38, height: 38)
+            WindowsGrid()
+                .frame(width: 26, height: 26)
+                .frame(width: 42, height: 42)
                 .background(RoundedRectangle(cornerRadius: 8)
                     .fill(Color.primary.opacity(hovering ? 0.10 : 0)))
         }
@@ -686,8 +790,7 @@ private struct PeekView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(12)
         .onHover { inside in inside ? model.keepPeek() : model.hoverExit() }
     }
 }
@@ -719,6 +822,102 @@ private struct PeekCard: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
     }
+}
+
+// MARK: - Calendar
+
+private struct CalendarRoot: View {
+    var body: some View {
+        CalendarView()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .glassPanel(14)
+    }
+}
+
+private struct CalendarView: View {
+    @State private var anchor = Date()          // a date within the shown month
+    private var cal: Calendar { Calendar.current }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(Date(), format: .dateTime.weekday(.wide).month(.wide).day())
+                .font(.headline)
+            HStack {
+                Text(anchor, format: .dateTime.month(.wide).year()).fontWeight(.semibold)
+                Spacer()
+                navButton("chevron.up") { shift(-1) }
+                navButton("chevron.down") { shift(1) }
+            }
+            .foregroundStyle(.secondary)
+
+            let cols = Array(repeating: GridItem(.fixed(30), spacing: 2), count: 7)
+            LazyVGrid(columns: cols, spacing: 4) {
+                ForEach(weekdays, id: \.self) {
+                    Text($0).font(.caption2).foregroundStyle(.secondary).frame(width: 30)
+                }
+                ForEach(days, id: \.self) { day in cell(day) }
+            }
+        }
+        .padding(14)
+        .frame(width: 260)
+    }
+
+    private func navButton(_ symbol: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .frame(width: 30, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func cell(_ date: Date) -> some View {
+        let inMonth = cal.isDate(date, equalTo: anchor, toGranularity: .month)
+        let today = cal.isDateInToday(date)
+        return Text("\(cal.component(.day, from: date))")
+            .font(.system(size: 12))
+            .frame(width: 30, height: 30)
+            .background(Circle().fill(today ? Color(red: 0.30, green: 0.76, blue: 1.0) : .clear))
+            .foregroundStyle(today ? Color.white : (inMonth ? Color.primary : Color.primary.opacity(0.3)))
+    }
+
+    private func shift(_ n: Int) {
+        if let d = cal.date(byAdding: .month, value: n, to: anchor) { anchor = d }
+    }
+
+    private var weekdays: [String] {
+        let s = cal.shortWeekdaySymbols.map { String($0.prefix(2)) }
+        let start = cal.firstWeekday - 1
+        return Array(s[start...] + s[..<start])
+    }
+
+    /// Six weeks of dates covering the shown month, with leading/trailing days.
+    private var days: [Date] {
+        guard let first = cal.date(from: cal.dateComponents([.year, .month], from: anchor)) else { return [] }
+        let weekday = cal.component(.weekday, from: first)
+        let leading = (weekday - cal.firstWeekday + 7) % 7
+        guard let start = cal.date(byAdding: .day, value: -leading, to: first) else { return [] }
+        return (0..<42).compactMap { cal.date(byAdding: .day, value: $0, to: start) }
+    }
+}
+
+/// The calendar popup panel shown above the clock.
+final class CalendarPanel: NSPanel {
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 260, height: 290),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        level = .floating
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        let host = NSHostingView(rootView: CalendarRoot())
+        host.autoresizingMask = [.width, .height]
+        contentView = host
+    }
+    override var canBecomeKey: Bool { true }
 }
 
 // MARK: - Panels

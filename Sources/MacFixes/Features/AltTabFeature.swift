@@ -154,11 +154,13 @@ final class AltTabModel: ObservableObject, @unchecked Sendable {
     func build() {
         var nameByPid: [pid_t: String] = [:]
         var iconByPid: [pid_t: NSImage?] = [:]
+        var axByPid: [pid_t: [CGWindowID: AXUIElement]] = [:]
         var list: [Win] = []
         for w in AXWindow.allWindows() {
             guard let app = NSRunningApplication(processIdentifier: w.pid),
-                  app.activationPolicy == .regular,
-                  let el = AXWindow.element(pid: w.pid, matchingFrame: w.frame) else { continue }
+                  app.activationPolicy == .regular else { continue }
+            if axByPid[w.pid] == nil { axByPid[w.pid] = AXWindow.axWindowsByID(pid: w.pid) }
+            guard let el = axByPid[w.pid]?[w.id] else { continue }   // exact per-window element
             if nameByPid[w.pid] == nil {
                 nameByPid[w.pid] = app.localizedName ?? "App"
                 iconByPid[w.pid] = app.icon
@@ -262,8 +264,7 @@ private struct AltTabView: View {
             }
         }
         .fixedSize(horizontal: true, vertical: true)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .glassPanel(20)
         .padding(40)
     }
 }

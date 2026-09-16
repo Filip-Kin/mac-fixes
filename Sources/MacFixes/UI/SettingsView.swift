@@ -346,6 +346,9 @@ private struct WindowsPane: View {
 
 private struct TaskbarPane: View {
     @ObservedObject var features: FeatureManager
+    @AppStorage("clockTimeFormat") private var timeFmt = "system"
+    @AppStorage("clockDateFormat") private var dateFmt = "system"
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             PaneHeader("Taskbar", "A Windows-style bar along the bottom of the screen showing open apps.")
@@ -355,6 +358,22 @@ private struct TaskbarPane: View {
 
             Toggle("Show on every monitor", isOn: $features.taskbarAllScreens)
                 .disabled(!features.taskbarEnabled)
+
+            HStack(spacing: 16) {
+                Picker("Clock time", selection: $timeFmt) {
+                    Text("System").tag("system")
+                    Text("24-hour (14:30)").tag("HH:mm")
+                    Text("12-hour (2:30 PM)").tag("h:mm a")
+                }.frame(width: 240)
+                Picker("Date", selection: $dateFmt) {
+                    Text("System").tag("system")
+                    Text("ISO (2026-09-16)").tag("yyyy-MM-dd")
+                    Text("US (9/16/2026)").tag("M/d/yyyy")
+                    Text("16 Sep 2026").tag("d MMM yyyy")
+                }.frame(width: 240)
+            }
+            Text("“System” follows your Mac’s Date & Time format (including 24-hour). Click the clock for a calendar.")
+                .font(.callout).foregroundStyle(.secondary)
 
             Toggle("Hide the macOS Dock completely", isOn: $features.hideDock)
             Text("Sets the Dock to auto-hide with a long reveal delay so it never appears. Turn off to restore it.")
