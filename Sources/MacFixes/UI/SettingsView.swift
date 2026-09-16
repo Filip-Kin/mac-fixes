@@ -27,20 +27,27 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     }
 }
 
+/// Lets other parts of the app open Settings to a specific pane.
+@MainActor
+final class SettingsRouter: ObservableObject {
+    static let shared = SettingsRouter()
+    @Published var pane: SettingsPane? = .scroll
+}
+
 struct SettingsView: View {
     @ObservedObject var features: FeatureManager
-    @State private var pane: SettingsPane? = .scroll
+    @ObservedObject private var router = SettingsRouter.shared
 
     var body: some View {
         NavigationSplitView {
-            List(SettingsPane.allCases, selection: $pane) { item in
+            List(SettingsPane.allCases, selection: $router.pane) { item in
                 Label(item.rawValue, systemImage: item.icon).tag(item)
             }
             .navigationSplitViewColumnWidth(190)
         } detail: {
             ScrollView {
                 Group {
-                    switch pane ?? .scroll {
+                    switch router.pane ?? .scroll {
                     case .scroll: ScrollPane(features: features)
                     case .capture: CapturePane(features: features)
                     case .clipboard: ClipboardPane(features: features, clip: features.clipboard)
@@ -343,7 +350,19 @@ private struct TaskbarPane: View {
         VStack(alignment: .leading, spacing: 16) {
             PaneHeader("Taskbar", "A Windows-style bar along the bottom of the screen showing open apps.")
             Toggle("Enable taskbar", isOn: $features.taskbarEnabled)
-            Text("Click an icon to switch; right-click for New Window or Quit; hover an app with several windows to pick one. The active app is highlighted, and Apple’s auto-launched Tips app is hidden. To use it as your only taskbar, set the macOS Dock to auto-hide in System Settings › Desktop & Dock.")
+            Text("Click an icon to switch; right-click to Pin, open a New Window, or Quit; hover an app with several windows to pick one; drag pinned icons to reorder. Pinned apps stay on the bar even when closed and launch on click. The active app is highlighted, and Apple’s auto-launched Tips app is hidden. To use it as your only taskbar, set the macOS Dock to auto-hide in System Settings › Desktop & Dock.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Toggle("Show on every monitor", isOn: $features.taskbarAllScreens)
+                .disabled(!features.taskbarEnabled)
+
+            Toggle("Hide the macOS Dock completely", isOn: $features.hideDock)
+            Text("Sets the Dock to auto-hide with a long reveal delay so it never appears. Turn off to restore it.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Divider()
+            Toggle("Alt-Tab window switcher (Option + Tab)", isOn: $features.altTabEnabled)
+            Text("Hold Option (the physical Alt on a PC keyboard) and tap Tab to cycle every open window as thumbnails; release to switch. Shift + Tab reverses, Esc cancels.")
                 .font(.callout).foregroundStyle(.secondary)
 
             Divider()

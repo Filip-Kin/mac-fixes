@@ -17,6 +17,7 @@ final class FeatureManager: ObservableObject {
     let tweaks = SystemTweaks()
     let taskbar = TaskbarFeature()
     let startMenu = StartMenuFeature()
+    let altTab = AltTabFeature()
 
     // MARK: Persisted feature state
 
@@ -77,6 +78,30 @@ final class FeatureManager: ObservableObject {
         }
     }
 
+    /// Taskbar on every monitor (vs. the primary only).
+    @Published var taskbarAllScreens: Bool {
+        didSet {
+            defaults.set(taskbarAllScreens, forKey: "taskbarAllScreens")
+            taskbar.placePanels()
+        }
+    }
+
+    @Published var altTabEnabled: Bool {
+        didSet {
+            defaults.set(altTabEnabled, forKey: "altTabEnabled")
+            apply(altTab, enabled: altTabEnabled)
+        }
+    }
+
+    /// Hide the macOS Dock entirely (auto-hide with a very long reveal delay, so
+    /// it never slides up). Pairs with the taskbar.
+    @Published var hideDock: Bool {
+        didSet {
+            defaults.set(hideDock, forKey: "hideDock")
+            DockControl.setHidden(hideDock)
+        }
+    }
+
     /// Registered as a login item (System Settings > General > Login Items).
     /// Defaults to on: the keyboard modifier swap for external keyboards is
     /// applied by the running app, so it needs to be up at login.
@@ -111,6 +136,9 @@ final class FeatureManager: ObservableObject {
         windowsEnabled = defaults.bool(forKey: "windowsEnabled")
         taskbarEnabled = defaults.bool(forKey: "taskbarEnabled")
         startMenuEnabled = defaults.bool(forKey: "startMenuEnabled")
+        taskbarAllScreens = defaults.bool(forKey: "taskbarAllScreens")
+        altTabEnabled = defaults.bool(forKey: "altTabEnabled")
+        hideDock = defaults.bool(forKey: "hideDock")
         launchAtLogin = SMAppService.mainApp.status == .enabled
 
         scroll.invertMouse = invertMouse
@@ -132,6 +160,8 @@ final class FeatureManager: ObservableObject {
         if windowsEnabled { _ = windows.start() }
         if taskbarEnabled { _ = taskbar.start() }
         if startMenuEnabled { _ = startMenu.start() }
+        if altTabEnabled { _ = altTab.start() }
+        if hideDock { DockControl.setHidden(true) }
         // Reapply the persistent modifier swap and start its hot-plug watcher,
         // even if the event-tap part of the keyboard feature is off.
         keyboard.modifierSwap.reapplyIfEnabled()
@@ -139,6 +169,31 @@ final class FeatureManager: ObservableObject {
 
     private func apply(_ feature: Feature, enabled: Bool) {
         if enabled { _ = feature.start() } else { feature.stop() }
+    }
+}
+
+/// Hides or restores the macOS Dock via its `defaults`.
+enum DockControl {
+    static func setHidden(_ hidden: Bool) {
+        if hidden {
+            run(["/usr/bin/defaults", "write", "com.apple.dock", "autohide", "-bool", "true"])
+            run(["/usr/bin/defaults", "write", "com.apple.dock", "autohide-delay", "-float", "1000"])
+            run(["/usr/bin/defaults", "write", "com.apple.dock", "autohide-time-modifier", "-float", "0"])
+        } else {
+            run(["/usr/bin/defaults", "delete", "com.apple.dock", "autohide-delay"])
+            run(["/usr/bin/defaults", "delete", "com.apple.dock", "autohide-time-modifier"])
+            run(["/usr/bin/defaults", "write", "com.apple.dock", "autohide", "-bool", "false"])
+        }
+        run(["/usr/bin/killall", "Dock"])
+    }
+
+    private static func run(_ argv: [String]) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: argv[0])
+        p.arguments = Array(argv.dropFirst())
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run(); p.waitUntilExit()
     }
 }
 

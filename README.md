@@ -85,23 +85,43 @@ while it is on. The same as `caffeinate -d`, without the terminal window.
 ### Taskbar
 
 A Windows-style taskbar along the bottom of the screen showing open apps, so you
-can see and switch what's running without a giant Dock. Click an icon to switch;
-right-click for New Window or Quit; hover an app with several windows to pick one
-from a list. A Start button sits at the left. Finder appears as a File Explorer
-button that opens a fresh window on click. Window snapping (maximize, halves,
-quarters, drag-snap) reserves the taskbar's strip so windows stop above it rather
-than sliding under. Apple's auto-launched Tips app is hidden. Off by default; to
-use it as your only taskbar, set the macOS Dock to auto-hide.
+can see and switch what's running without a giant Dock. Click an icon to switch
+(clicking the active app minimizes it); right-click to Pin, open a New Window, or
+Quit; hover an app with several windows to pick one from live thumbnails; drag
+icons to reorder (pinned order persists). Pinned apps stay on the bar even when
+closed and launch on click. A Start button sits at the left, and Finder appears
+as a File Explorer button that opens a fresh window on click (its indicator only
+shows when it actually has a window open). Window snapping reserves the taskbar's
+strip so windows stop above it. Right-click empty space for Taskbar settings.
+Optionally shows on every monitor. A separate switch hides the macOS Dock
+entirely. Apple's auto-launched Tips app is hidden. Off by default.
 
 ### Start menu
 
-Tap the Windows key on its own to open a search box; type an app or folder name
-and press Return to launch it. Apps and common folders (Downloads, Documents,
-Desktop…) only — no dictionary or web results, so it never opens the wrong thing.
-Results rank by how often you launch them from here, so it sharpens over time. A
-footer row has quick buttons for System Settings, Sleep, Restart and Shut Down.
-Opens from the taskbar's Start button too, and returns focus to where you were
-when you close it without launching. Off by default.
+Tap the Windows key on its own to open a launcher with Raycast-style fuzzy search
+(acronyms like "vsc" find Visual Studio Code) across several sources: apps and
+folders, common folders (Downloads, Documents…), System Settings panes (type
+"wifi" or "displays" to jump straight there), Spotlight file search, and a
+calculator (type an expression, Return copies the result). Results rank by how
+often you launch them, so it sharpens over time. Arrow keys to move, Return to
+run, Esc to close; a footer has System Settings, Sleep, Restart and Shut Down.
+Opens on the cursor's screen and from the taskbar's Start button, and returns
+focus to where you were when closed without launching. Off by default.
+
+### Alt-Tab switcher
+
+Hold Option (the physical Alt on a PC keyboard) and tap Tab to cycle every open
+window as a centered grid of thumbnails; release Option to switch to the
+highlighted one. Shift+Tab reverses, Esc cancels, clicking a thumbnail jumps to
+it. Thumbnails are captured on demand and cached, and the overlay opens on the
+screen under the cursor. Off by default.
+
+### Window extras
+
+Beyond snapping: double-click a title bar to maximize with the taskbar-aware fill
+instead of macOS zoom (an event tap swallows the OS action so it doesn't flash).
+The "Screen" screenshot and recording target the display holding the focused
+window, not always the main one.
 
 ### Screen capture
 

@@ -129,7 +129,10 @@ final class CaptureFeature: Feature, @unchecked Sendable {
         switch target {
         case .area:   args = ["-i"]
         case .window: args = ["-iw", "-o"]
-        case .screen: args = []
+        case .screen:
+            // Capture the screen holding the focused window (not always main).
+            let r = AXWindow.axFullFrame(AXWindow.focusedScreen())
+            args = ["-R\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width)),\(Int(r.height))"]
         }
         args += [url.path]
 
@@ -233,10 +236,7 @@ final class CaptureFeature: Feature, @unchecked Sendable {
     }
 
     private func fullDisplayAX() -> CGRect {
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
-        let f = screen.frame
-        return CGRect(x: f.minX, y: primaryHeight - f.maxY, width: f.width, height: f.height)
+        AXWindow.axFullFrame(AXWindow.focusedScreen())
     }
 
     private static func timestamp() -> String {

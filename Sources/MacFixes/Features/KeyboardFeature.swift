@@ -185,9 +185,15 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
 
         switch code {
         case kVK_Home where homeEnd:
-            return .rewrite(code: cmd && docNav ? kVK_UpArrow : kVK_LeftArrow, flags: base.union(.maskCommand))
+            // Ctrl+Home -> document top. Plain Home -> line start in a text field,
+            // otherwise pass through so the page scrolls to the top natively.
+            if cmd && docNav { return .rewrite(code: kVK_UpArrow, flags: base.union(.maskCommand)) }
+            return AXWindow.focusedIsTextInput()
+                ? .rewrite(code: kVK_LeftArrow, flags: base.union(.maskCommand)) : .pass
         case kVK_End where homeEnd:
-            return .rewrite(code: cmd && docNav ? kVK_DownArrow : kVK_RightArrow, flags: base.union(.maskCommand))
+            if cmd && docNav { return .rewrite(code: kVK_DownArrow, flags: base.union(.maskCommand)) }
+            return AXWindow.focusedIsTextInput()
+                ? .rewrite(code: kVK_RightArrow, flags: base.union(.maskCommand)) : .pass
         case kVK_LeftArrow where cmd && wordJump:
             return .rewrite(code: kVK_LeftArrow, flags: base.union(.maskAlternate))
         case kVK_RightArrow where cmd && wordJump:

@@ -70,7 +70,6 @@ struct HotKeyListEditor: View {
                         Image(systemName: "minus.circle")
                     }
                     .buttonStyle(.borderless)
-                    .disabled(combos.count <= 1)
                     Spacer()
                 }
             }

@@ -131,7 +131,10 @@ final class StartMenuFeature: Feature, @unchecked Sendable {
 
     @MainActor
     private func position(_ p: StartMenuPanel) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        // Appear on the screen the cursor is on (which is the taskbar's screen).
+        let cursor = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(cursor) })
+            ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let f = screen.frame
         let w: CGFloat = 380, h: CGFloat = 460
         let bottom = max(TaskbarLayout.bottomInset, 8)
@@ -150,7 +153,7 @@ final class StartMenuFeature: Feature, @unchecked Sendable {
                 case kVK_DownArrow: self.model.move(1); return true
                 case kVK_UpArrow:   self.model.move(-1); return true
                 case kVK_Return, kVK_ANSI_KeypadEnter:
-                    if self.model.launchSelected() { self.close(restoringFocus: false) }
+                    if self.model.runSelected() { self.close(restoringFocus: false) }
                     return true
                 case kVK_Escape:    self.close(restoringFocus: true); return true
                 default:            return false
@@ -181,12 +184,33 @@ final class StartMenuModel: ObservableObject, @unchecked Sendable {
         let id: String      // full path
         let name: String
         let url: URL
-        /// Computed (not stored) so we never retain a pile of icon bitmaps.
-        var icon: NSImage { NSWorkspace.shared.icon(forFile: url.path) }
     }
 
+    /// A single search hit from any source (app, folder, file, setting, calc).
+    struct SearchResult: Identifiable {
+        enum Kind { case app, folder, file, setting, calculation }
+        let id: String
+        let title: String
+        let subtitle: String
+        let kind: Kind
+        let iconPath: String?      // resolve to a file icon lazily
+        let symbol: String?        // or an SF Symbol (settings, calc)
+        let action: SRAction
+        /// Computed so we never retain a pile of icon bitmaps.
+        var icon: NSImage? { iconPath.map { NSWorkspace.shared.icon(forFile: $0) } }
+    }
+
+    enum SRAction {
+        case openFile(URL)         // apps and files
+        case openFolder(URL)       // a new Finder window
+        case settings(String)      // an x-apple.systempreferences URL
+        case copy(String)          // e.g. a calculator result
+    }
+
+    struct SettingsPane { let title: String; let url: String; let symbol: String; let keywords: [String] }
+
     @Published var query: String = "" { didSet { filter() } }
-    @Published private(set) var results: [AppEntry] = []
+    @Published private(set) var results: [SearchResult] = []
     @Published var selection = 0
     /// Bumped to make the search field grab focus each time the menu opens.
     @Published var focusTick = 0
@@ -198,8 +222,12 @@ final class StartMenuModel: ObservableObject, @unchecked Sendable {
 
     private var index: [AppEntry] = []
     private let defaults = UserDefaults.standard
-    /// How many times each app has been launched from here, for ranking.
+    /// How many times each result has been launched from here, for ranking.
     private var usage: [String: Int]
+    /// Bumped each keystroke so async file results from a stale query are dropped.
+    private var searchGen = 0
+    /// The synchronous hits for the current query, so async file hits can merge.
+    private var lastScored: [(SearchResult, Int)] = []
 
     // Roots to scan, each to a small depth (apps nested in vendor folders like
     // /Applications/Adobe…/App.app are common). We never descend into a .app.
@@ -283,33 +311,181 @@ final class StartMenuModel: ObservableObject, @unchecked Sendable {
     func reset() { query = ""; selection = 0; filter() }
 
     private func filter() {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = query.trimmingCharacters(in: .whitespaces)
         selection = 0
-        guard !q.isEmpty else {
-            // No query: most-used first, then alphabetical.
-            results = index
-                .sorted { rank($0) != rank($1) ? rank($0) > rank($1)
-                    : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                .prefix(8).map { $0 }
-            return
+        searchGen += 1
+        guard !q.isEmpty else { results = defaultResults(); lastScored = []; return }
+
+        var scored: [(SearchResult, Int)] = []
+        // Calculator — floats to the top when the query is an expression.
+        if let v = Calc.eval(q) {
+            let text = Calc.format(v)
+            scored.append((SearchResult(id: "calc", title: text, subtitle: "Calculator — Return to copy",
+                                        kind: .calculation, iconPath: nil, symbol: "equal.square",
+                                        action: .copy(text)), 5000))
         }
-        // Text tier: name prefix, then word-start, then anywhere. Within a tier,
-        // more-used apps rank above closer text matches, then shorter names.
-        let scored: [(AppEntry, Int)] = index.compactMap { app in
-            let n = app.name.lowercased()
-            if n.hasPrefix(q) { return (app, 0) }
-            if n.contains(" " + q) { return (app, 1) }
-            if n.contains(q) { return (app, 2) }
-            return nil
+        // Apps and folders.
+        for app in index {
+            guard let s = Self.fuzzyScore(q, app.name) else { continue }
+            scored.append((appResult(app), s + min(rank(app.id), 25) * 6))
         }
-        results = scored.sorted { a, b in
-            if a.1 != b.1 { return a.1 < b.1 }                 // text tier
-            if rank(a.0) != rank(b.0) { return rank(a.0) > rank(b.0) }  // usage
-            return a.0.name.count < b.0.name.count             // shorter name
-        }.prefix(8).map(\.0)
+        // System Settings panes (slightly below a matching app).
+        for pane in Self.settingsPanes {
+            guard let s = Self.bestScore(q, pane.title, pane.keywords) else { continue }
+            scored.append((settingResult(pane), s - 30 + min(rank("set:" + pane.url), 25) * 6))
+        }
+        lastScored = scored
+        results = topResults(scored)
+        searchFiles(q, gen: searchGen)   // Spotlight, async
     }
 
-    private func rank(_ app: AppEntry) -> Int { usage[app.id] ?? 0 }
+    private func rank(_ id: String) -> Int { usage[id] ?? 0 }
+
+    private func topResults(_ scored: [(SearchResult, Int)]) -> [SearchResult] {
+        scored.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.title.count < $1.0.title.count }
+            .prefix(9).map(\.0)
+    }
+
+    private func defaultResults() -> [SearchResult] {
+        index.sorted { rank($0.id) != rank($1.id) ? rank($0.id) > rank($1.id)
+            : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .prefix(8).map { appResult($0) }
+    }
+
+    private func appResult(_ app: AppEntry) -> SearchResult {
+        let isApp = app.url.pathExtension == "app"
+        return SearchResult(id: app.id, title: app.name, subtitle: isApp ? "Application" : "Folder",
+                            kind: isApp ? .app : .folder, iconPath: app.url.path, symbol: nil,
+                            action: isApp ? .openFile(app.url) : .openFolder(app.url))
+    }
+
+    private func settingResult(_ p: SettingsPane) -> SearchResult {
+        SearchResult(id: "set:" + p.url, title: p.title, subtitle: "System Settings",
+                     kind: .setting, iconPath: nil, symbol: p.symbol, action: .settings(p.url))
+    }
+
+    // MARK: Spotlight file search
+
+    private func searchFiles(_ q: String, gen: Int) {
+        guard q.count >= 3 else { return }   // short queries are too noisy
+        Task.detached { [weak self] in
+            let paths = Self.mdfind(q)
+            await MainActor.run {
+                guard let self, gen == self.searchGen else { return }   // query moved on
+                let fileScored: [(SearchResult, Int)] = paths.prefix(8).compactMap { path in
+                    let name = (path as NSString).lastPathComponent
+                    guard let s = Self.fuzzyScore(q, name) else { return nil }
+                    let url = URL(fileURLWithPath: path)
+                    var isDir: ObjCBool = false
+                    FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+                    return (SearchResult(id: "file:" + path, title: name,
+                                         subtitle: (path as NSString).deletingLastPathComponent,
+                                         kind: isDir.boolValue ? .folder : .file, iconPath: path, symbol: nil,
+                                         action: isDir.boolValue ? .openFolder(url) : .openFile(url)),
+                            s - 250)   // files rank below apps/settings
+                }
+                self.results = self.topResults(self.lastScored + fileScored)
+            }
+        }
+    }
+
+    private static func mdfind(_ q: String) -> [String] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        p.arguments = ["-name", q]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let lines = (String(data: data, encoding: .utf8) ?? "").split(separator: "\n").map(String.init)
+        return Array(lines.prefix(60))
+    }
+
+    /// Best fuzzy score across a title and its keywords.
+    static func bestScore(_ q: String, _ title: String, _ keywords: [String]) -> Int? {
+        var best = fuzzyScore(q, title)
+        for k in keywords {
+            if let s = fuzzyScore(q, k) { best = max(best ?? Int.min, s - 60) }
+        }
+        return best
+    }
+
+    static let settingsPanes: [SettingsPane] = [
+        .init(title: "Wi-Fi", url: "x-apple.systempreferences:com.apple.wifi-settings-extension", symbol: "wifi", keywords: ["network", "internet", "wireless"]),
+        .init(title: "Bluetooth", url: "x-apple.systempreferences:com.apple.BluetoothSettings", symbol: "dot.radiowaves.right", keywords: []),
+        .init(title: "Displays", url: "x-apple.systempreferences:com.apple.Displays-Settings.extension", symbol: "display", keywords: ["monitor", "resolution", "screen"]),
+        .init(title: "Sound", url: "x-apple.systempreferences:com.apple.Sound-Settings.extension", symbol: "speaker.wave.2", keywords: ["audio", "volume"]),
+        .init(title: "Notifications", url: "x-apple.systempreferences:com.apple.Notifications-Settings.extension", symbol: "bell", keywords: []),
+        .init(title: "Battery", url: "x-apple.systempreferences:com.apple.Battery-Settings.extension", symbol: "battery.100", keywords: ["power", "energy"]),
+        .init(title: "Keyboard", url: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension", symbol: "keyboard", keywords: []),
+        .init(title: "Trackpad", url: "x-apple.systempreferences:com.apple.Trackpad-Settings.extension", symbol: "rectangle.and.hand.point.up.left", keywords: []),
+        .init(title: "Mouse", url: "x-apple.systempreferences:com.apple.Mouse-Settings.extension", symbol: "computermouse", keywords: []),
+        .init(title: "General", url: "x-apple.systempreferences:com.apple.systempreferences.GeneralSettings", symbol: "gearshape", keywords: ["about", "software update"]),
+        .init(title: "Appearance", url: "x-apple.systempreferences:com.apple.Appearance-Settings.extension", symbol: "circle.lefthalf.filled", keywords: ["dark mode", "theme", "light"]),
+        .init(title: "Wallpaper", url: "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension", symbol: "photo", keywords: ["desktop", "background"]),
+        .init(title: "Desktop & Dock", url: "x-apple.systempreferences:com.apple.Desktop-Settings.extension", symbol: "dock.rectangle", keywords: ["dock", "mission control", "hot corners", "stage manager"]),
+        .init(title: "Accessibility", url: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension", symbol: "accessibility", keywords: []),
+        .init(title: "Privacy & Security", url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension", symbol: "hand.raised", keywords: ["camera", "microphone", "permissions", "firewall"]),
+        .init(title: "Network", url: "x-apple.systempreferences:com.apple.Network-Settings.extension", symbol: "network", keywords: ["vpn", "dns", "ethernet"]),
+        .init(title: "Users & Groups", url: "x-apple.systempreferences:com.apple.Users-Groups-Settings.extension", symbol: "person.2", keywords: ["account", "login"]),
+        .init(title: "Focus", url: "x-apple.systempreferences:com.apple.Focus-Settings.extension", symbol: "moon", keywords: ["do not disturb", "dnd"]),
+    ]
+
+    // MARK: Fuzzy matching (Raycast-style)
+
+    private static let separators: Set<Character> = [" ", "-", "_", ".", "/", "("]
+
+    /// Match score for `query` against `name`, higher is better; nil if no match.
+    /// Rewards exact prefixes, initials/acronyms (vsc → Visual Studio Code),
+    /// word-boundary and consecutive matches.
+    static func fuzzyScore(_ query: String, _ name: String) -> Int? {
+        let q = query.lowercased()
+        let lower = name.lowercased()
+        if lower.hasPrefix(q) { return 1000 - name.count }
+        let initials = initials(of: name)
+        if initials.hasPrefix(q) { return 850 - name.count }
+        if initials.contains(q) { return 650 - name.count }
+        if lower.contains(" " + q) { return 550 - name.count }
+        if let r = lower.range(of: q) {
+            return 450 - lower.distance(from: lower.startIndex, to: r.lowerBound) - name.count / 2
+        }
+        return subsequenceScore(q, lower, name)
+    }
+
+    /// First letters of each word and camelCase hump, e.g. "Visual Studio Code" -> "vsc".
+    private static func initials(of s: String) -> String {
+        var out = ""
+        let chars = Array(s)
+        var prevSep = true
+        for (i, ch) in chars.enumerated() {
+            let isSep = separators.contains(ch)
+            let camel = ch.isUppercase && i > 0 && chars[i - 1].isLowercase
+            if !isSep, prevSep || camel { out.append(Character(ch.lowercased())) }
+            prevSep = isSep
+        }
+        return out
+    }
+
+    /// Ordered-subsequence match with word-boundary / consecutive bonuses.
+    private static func subsequenceScore(_ q: String, _ lower: String, _ orig: String) -> Int? {
+        let qa = Array(q), la = Array(lower), oa = Array(orig)
+        var qi = 0, score = 100, prevMatch = -2, prevSep = true
+        for ci in 0..<la.count {
+            let ch = la[ci]
+            if qi < qa.count, ch == qa[qi] {
+                var bonus = 1
+                if prevSep { bonus += 10 } else if oa[ci].isUppercase { bonus += 8 }
+                if prevMatch == ci - 1 { bonus += 6 }
+                score += bonus
+                prevMatch = ci
+                qi += 1
+            }
+            prevSep = separators.contains(ch)
+        }
+        return qi == qa.count ? score - orig.count / 3 : nil
+    }
 
     @MainActor
     func move(_ delta: Int) {
@@ -319,24 +495,95 @@ final class StartMenuModel: ObservableObject, @unchecked Sendable {
 
     @MainActor
     @discardableResult
-    func launch(_ app: AppEntry) -> Bool {
-        usage[app.id, default: 0] += 1
+    func run(_ r: SearchResult) -> Bool {
+        usage[r.id, default: 0] += 1
         defaults.set(usage, forKey: "startMenuUsage")
-        if app.url.pathExtension == "app" {
-            return NSWorkspace.shared.open(app.url)
+        switch r.action {
+        case .openFile(let url):
+            return NSWorkspace.shared.open(url)
+        case .openFolder(let url):
+            // Open in a NEW Finder window, frontmost, without pulling old ones up.
+            osa("tell application \"Finder\"\nactivate\nmake new Finder window to (POSIX file \"\(url.path)\")\nend tell")
+            return true
+        case .settings(let s):
+            if let url = URL(string: s) { NSWorkspace.shared.open(url) }
+            return true
+        case .copy(let text):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return true
         }
-        // A folder: open it in a NEW Finder window. Activating Finder is needed
-        // for the window to appear; the new window is created frontmost, so the
-        // old ones stay behind it rather than being pulled to the front.
-        osa("tell application \"Finder\"\nactivate\nmake new Finder window to (POSIX file \"\(app.url.path)\")\nend tell")
-        return true
     }
 
     @MainActor
     @discardableResult
-    func launchSelected() -> Bool {
+    func runSelected() -> Bool {
         guard results.indices.contains(selection) else { return false }
-        return launch(results[selection])
+        return run(results[selection])
+    }
+}
+
+/// A tiny, exception-free arithmetic evaluator for the Start menu calculator.
+enum Calc {
+    static func eval(_ s: String) -> Double? {
+        let allowed = Set("0123456789.+-*/()%^ ")
+        guard s.allSatisfy({ allowed.contains($0) }),
+              s.contains(where: { $0.isNumber }),
+              s.contains(where: { "+-*/^%".contains($0) }) else { return nil }
+        var p = Parser(Array(s.filter { !$0.isWhitespace }))
+        guard let v = p.expr(), p.atEnd, v.isFinite else { return nil }
+        return v
+    }
+
+    static func format(_ v: Double) -> String {
+        if v == v.rounded() && abs(v) < 1e15 { return String(Int(v)) }
+        return String(format: "%g", v)
+    }
+
+    private struct Parser {
+        let c: [Character]; var i = 0
+        init(_ c: [Character]) { self.c = c }
+        var atEnd: Bool { i >= c.count }
+        func peek() -> Character? { i < c.count ? c[i] : nil }
+
+        mutating func expr() -> Double? {           // + -
+            guard var left = term() else { return nil }
+            while let op = peek(), op == "+" || op == "-" {
+                i += 1
+                guard let r = term() else { return nil }
+                left = op == "+" ? left + r : left - r
+            }
+            return left
+        }
+        mutating func term() -> Double? {           // * / %
+            guard var left = factor() else { return nil }
+            while let op = peek(), op == "*" || op == "/" || op == "%" {
+                i += 1
+                guard let r = factor() else { return nil }
+                if op == "*" { left *= r }
+                else { if r == 0 { return nil }; left = op == "/" ? left / r : left.truncatingRemainder(dividingBy: r) }
+            }
+            return left
+        }
+        mutating func factor() -> Double? {         // unary, ^
+            if peek() == "-" { i += 1; return factor().map { -$0 } }
+            if peek() == "+" { i += 1; return factor() }
+            guard var base = atom() else { return nil }
+            if peek() == "^" { i += 1; guard let e = factor() else { return nil }; base = pow(base, e) }
+            return base
+        }
+        mutating func atom() -> Double? {           // number or ( )
+            if peek() == "(" {
+                i += 1
+                let v = expr()
+                guard peek() == ")" else { return nil }
+                i += 1
+                return v
+            }
+            var num = ""
+            while let ch = peek(), ch.isNumber || ch == "." { num.append(ch); i += 1 }
+            return Double(num)
+        }
     }
 }
 
@@ -348,19 +595,19 @@ private struct StartMenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Search apps and folders…", text: $model.query)
+            TextField("Search apps, files, settings…", text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .focused($searchFocused)
-                .onSubmit { if model.launchSelected() { model.onRequestClose?(false) } }
+                .onSubmit { if model.runSelected() { model.onRequestClose?(false) } }
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
 
             ScrollView {
                 VStack(spacing: 2) {
-                    ForEach(Array(model.results.enumerated()), id: \.element.id) { idx, app in
-                        StartRow(app: app, selected: idx == model.selection) {
-                            if model.launch(app) { model.onRequestClose?(false) }
+                    ForEach(Array(model.results.enumerated()), id: \.element.id) { idx, result in
+                        StartRow(result: result, selected: idx == model.selection) {
+                            if model.run(result) { model.onRequestClose?(false) }
                         }
                         .onHover { if $0 { model.selection = idx } }
                     }
@@ -411,23 +658,53 @@ private struct FooterButton: View {
 }
 
 private struct StartRow: View {
-    let app: StartMenuModel.AppEntry
+    let result: StartMenuModel.SearchResult
     let selected: Bool
     let onClick: () -> Void
 
     var body: some View {
         Button(action: onClick) {
             HStack(spacing: 10) {
-                Image(nsImage: app.icon).resizable().frame(width: 24, height: 24)
-                Text(app.name).lineLimit(1)
+                icon.frame(width: 30, height: 30)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(result.title).lineLimit(1)
+                    if !result.subtitle.isEmpty {
+                        Text(result.subtitle).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
                 Spacer(minLength: 0)
+                if let tag = kindLabel {
+                    Text(tag).font(.caption2).foregroundStyle(.tertiary)
+                }
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
+            .padding(.horizontal, 10).padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 8)
                 .fill(Color.accentColor.opacity(selected ? 0.25 : 0)))
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder private var icon: some View {
+        if let img = result.icon {
+            Image(nsImage: img).resizable().scaledToFit()
+        } else if let sym = result.symbol {
+            Image(systemName: sym).resizable().scaledToFit().padding(3)
+                .foregroundStyle(.secondary)
+        } else {
+            Image(systemName: "doc").resizable().scaledToFit().foregroundStyle(.secondary)
+        }
+    }
+
+    private var kindLabel: String? {
+        switch result.kind {
+        case .app:         return nil
+        case .folder:      return "Folder"
+        case .file:        return "File"
+        case .setting:     return "Settings"
+        case .calculation: return "="
+        }
     }
 }
 

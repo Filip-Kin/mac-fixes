@@ -8,6 +8,24 @@ import ApplicationServices
 /// origin — so screen frames are flipped before use.
 enum AXWindow {
 
+    /// True when keyboard focus is in a text-editing control (so Home/End should
+    /// move within the line rather than scroll the page).
+    static func focusedIsTextInput() -> Bool {
+        let sys = AXUIElementCreateSystemWide()
+        var elRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &elRef) == .success,
+              let elVal = elRef, CFGetTypeID(elVal) == AXUIElementGetTypeID() else { return false }
+        let el = elVal as! AXUIElement
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &roleRef)
+        switch roleRef as? String {
+        case kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func focusedWindow() -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
         var appRef: CFTypeRef?
@@ -80,6 +98,54 @@ enum AXWindow {
         return out
     }
 
+    /// On-screen window ids and frames for an app, for matching AX windows to a
+    /// CGWindowID (needed to screenshot them).
+    static func onScreenWindowIDs(pid: pid_t) -> [(id: CGWindowID, frame: CGRect)] {
+        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { return [] }
+        var out: [(CGWindowID, CGRect)] = []
+        for w in info {
+            guard (w[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                  (w[kCGWindowLayer as String] as? Int) == 0,
+                  let n = w[kCGWindowNumber as String] as? CGWindowID,
+                  let bounds = w[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
+            out.append((n, rect))
+        }
+        return out
+    }
+
+    /// All normal on-screen windows, front-to-back, for the switcher.
+    static func allWindows() -> [(id: CGWindowID, pid: pid_t, title: String, frame: CGRect)] {
+        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { return [] }
+        var out: [(CGWindowID, pid_t, String, CGRect)] = []
+        for w in info {
+            guard (w[kCGWindowLayer as String] as? Int) == 0,
+                  let n = w[kCGWindowNumber as String] as? CGWindowID,
+                  let pid = w[kCGWindowOwnerPID as String] as? pid_t,
+                  let bounds = w[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  rect.width >= 80, rect.height >= 80 else { continue }
+            if (w[kCGWindowOwnerName as String] as? String) == "Filip's Mac Fixes" { continue }
+            out.append((n, pid, (w[kCGWindowName as String] as? String) ?? "", rect))
+        }
+        return out
+    }
+
+    /// The AX element for a window on a pid whose frame best matches `frame`.
+    static func element(pid: pid_t, matchingFrame frame: CGRect) -> AXUIElement? {
+        var best: (el: AXUIElement, dist: CGFloat)?
+        for e in windowList(pid: pid) {
+            guard let f = AXWindow.frame(of: e.element) else { continue }
+            let d = abs(f.minX - frame.minX) + abs(f.minY - frame.minY)
+                + abs(f.width - frame.width) + abs(f.height - frame.height)
+            if best == nil || d < best!.dist { best = (e.element, d) }
+        }
+        if let best, best.dist < 20 { return best.el }
+        return nil
+    }
+
     /// Bring one specific window to the front (and its app with it).
     static func raise(_ window: AXUIElement, pid: pid_t) {
         NSRunningApplication(processIdentifier: pid)?.activate(options: [])
@@ -114,6 +180,18 @@ enum AXWindow {
 
     private static var primaryHeight: CGFloat {
         NSScreen.screens.first?.frame.height ?? 0
+    }
+
+    /// A screen's full frame (including menu bar and Dock) in AX coordinates.
+    static func axFullFrame(_ screen: NSScreen) -> CGRect {
+        let f = screen.frame
+        return CGRect(x: f.minX, y: primaryHeight - f.maxY, width: f.width, height: f.height)
+    }
+
+    /// The screen containing the frontmost app's focused window, else main.
+    static func focusedScreen() -> NSScreen {
+        if let win = frontmostWindow(), let f = frame(of: win) { return screen(forAX: f) }
+        return NSScreen.main ?? NSScreen.screens[0]
     }
 
     /// A screen's usable area (minus menu bar and Dock) in AX coordinates.

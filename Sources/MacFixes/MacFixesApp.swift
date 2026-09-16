@@ -24,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar only, no dock icon
         features.bootstrap()
+        // Right-click empty taskbar space opens Settings on the Taskbar pane.
+        features.taskbar.setOpenSettingsAction { [weak self] in
+            MainActor.assumeIsolated { self?.showSettings(pane: .taskbar) }
+        }
         setupStatusItem()
         NotificationCenter.default.addObserver(forName: .recordingStateChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusIcon() }
@@ -176,7 +180,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func cancelRecording() { features.capture.cancelRecording() }
 
-    @objc private func openSettings() {
+    @objc private func openSettings() { showSettings() }
+
+    /// Open Settings, optionally jumping to a specific pane.
+    func showSettings(pane: SettingsPane? = nil) {
+        if let pane { SettingsRouter.shared.pane = pane }
         if settingsWindow == nil {
             let host = NSHostingController(rootView: SettingsView(features: features))
             let window = NSWindow(contentViewController: host)

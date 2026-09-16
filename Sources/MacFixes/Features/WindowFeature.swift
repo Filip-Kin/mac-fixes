@@ -156,6 +156,11 @@ final class SnapController: @unchecked Sendable {
     // The top (maximize) zone is deeper — it is the one people aim for most, and
     // a fast flick to the top pins the cursor at the edge a little short of it.
     private let topThreshold: CGFloat = 44
+    // The drag must move this far before snapping arms, so a click with a little
+    // jitter (e.g. selecting a browser tab near the top) is not read as a drag.
+    private let minDrag: CGFloat = 40
+    private var dragOrigin: CGPoint?
+    private var dragMoved = false
 
     func start() {
         guard dragMonitor == nil else { return }
@@ -174,7 +179,10 @@ final class SnapController: @unchecked Sendable {
     }
 
     private func dragged() {
-        guard let (target, win) = evaluate(at: NSEvent.mouseLocation) else {
+        let cursor = NSEvent.mouseLocation
+        if dragOrigin == nil { dragOrigin = cursor }
+        if let o = dragOrigin, hypot(cursor.x - o.x, cursor.y - o.y) > minDrag { dragMoved = true }
+        guard dragMoved, let (target, win) = evaluate(at: cursor) else {
             pending = nil; pendingWindow = nil; hidePreview(); return
         }
         pending = target
@@ -218,11 +226,16 @@ final class SnapController: @unchecked Sendable {
     /// half the height.
     static func adaptiveTarget(_ pos: WindowPosition, vf: CGRect, occupied: [CGRect]) -> CGRect {
         let minW = vf.width * 0.15
+        let edgeTol: CGFloat = 12
+        let tall = vf.height * 0.8
+        // A window forms a fill boundary only if it is itself snapped to that
+        // side — it touches the edge and is near full height. Floating windows
+        // sitting in the middle of the screen are ignored.
         let rightBoundary = occupied
-            .filter { $0.midX > vf.midX && $0.height > vf.height * 0.4 }
+            .filter { $0.midX > vf.midX && $0.height >= tall && abs($0.maxX - vf.maxX) < edgeTol }
             .map(\.minX).min() ?? vf.midX
         let leftBoundary = occupied
-            .filter { $0.midX < vf.midX && $0.height > vf.height * 0.4 }
+            .filter { $0.midX < vf.midX && $0.height >= tall && abs($0.minX - vf.minX) < edgeTol }
             .map(\.maxX).max() ?? vf.midX
 
         switch pos {
@@ -247,6 +260,7 @@ final class SnapController: @unchecked Sendable {
         let target = pending
         let win = pendingWindow
         pending = nil; pendingWindow = nil
+        dragOrigin = nil; dragMoved = false
         hidePreview()
         guard let target, let win else { return }
         // Apply just after the drag finalizes, or the release overrides it.
