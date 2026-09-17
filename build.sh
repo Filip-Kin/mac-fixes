@@ -44,6 +44,13 @@ cat > "$BUILD/$APP/Contents/Info.plist" <<PLIST
     <string>Filip's Mac Fixes uses screen capture for screenshots and screen recording.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Filip's Mac Fixes records the microphone when you enable audio in a screen recording.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>    <string>$BUNDLE_ID</string>
+            <key>CFBundleURLSchemes</key> <array><string>macfixes</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

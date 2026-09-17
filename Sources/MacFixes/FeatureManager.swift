@@ -18,6 +18,9 @@ final class FeatureManager: ObservableObject {
     let taskbar = TaskbarFeature()
     let startMenu = StartMenuFeature()
     let altTab = AltTabFeature()
+    let monitorVolume = MonitorVolumeFeature()
+    let softwareVolume = SoftwareVolumeFeature()
+    let taskManager = TaskManagerFeature()
 
     // MARK: Persisted feature state
 
@@ -93,6 +96,20 @@ final class FeatureManager: ObservableObject {
         }
     }
 
+    @Published var monitorVolumeEnabled: Bool {
+        didSet {
+            defaults.set(monitorVolumeEnabled, forKey: "monitorVolumeEnabled")
+            apply(monitorVolume, enabled: monitorVolumeEnabled)
+        }
+    }
+
+    @Published var softwareVolumeEnabled: Bool {
+        didSet {
+            defaults.set(softwareVolumeEnabled, forKey: "softwareVolumeEnabled")
+            apply(softwareVolume, enabled: softwareVolumeEnabled)
+        }
+    }
+
     /// Hide the macOS Dock entirely (auto-hide with a very long reveal delay, so
     /// it never slides up). Pairs with the taskbar.
     @Published var hideDock: Bool {
@@ -138,6 +155,8 @@ final class FeatureManager: ObservableObject {
         startMenuEnabled = defaults.bool(forKey: "startMenuEnabled")
         taskbarAllScreens = defaults.bool(forKey: "taskbarAllScreens")
         altTabEnabled = defaults.bool(forKey: "altTabEnabled")
+        monitorVolumeEnabled = defaults.bool(forKey: "monitorVolumeEnabled")
+        softwareVolumeEnabled = defaults.bool(forKey: "softwareVolumeEnabled")
         hideDock = defaults.bool(forKey: "hideDock")
         launchAtLogin = SMAppService.mainApp.status == .enabled
 
@@ -161,6 +180,8 @@ final class FeatureManager: ObservableObject {
         if taskbarEnabled { _ = taskbar.start() }
         if startMenuEnabled { _ = startMenu.start() }
         if altTabEnabled { _ = altTab.start() }
+        if monitorVolumeEnabled { _ = monitorVolume.start() }
+        if softwareVolumeEnabled { _ = softwareVolume.start() }
         if hideDock { DockControl.setHidden(true) }
         // Reapply the persistent modifier swap and start its hot-plug watcher,
         // even if the event-tap part of the keyboard feature is off.

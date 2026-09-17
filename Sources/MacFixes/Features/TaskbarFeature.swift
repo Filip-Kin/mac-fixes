@@ -449,6 +449,9 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
             focus(item); return
         }
         app.activate(options: [])
+        // Prefer the app's real "New Window" menu item (Cmd+N is "new file" in
+        // some apps like VSCode); fall back to Cmd+N only if there is no such item.
+        if AXWindow.pressMenuItem(pid: pid, titled: ["New Window", "New window"]) { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             let src = CGEventSource(stateID: .combinedSessionState)
             let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_N), keyDown: true)

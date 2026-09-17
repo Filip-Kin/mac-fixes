@@ -7,6 +7,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case keyboard = "Keyboard"
     case windows = "Windows"
     case taskbar = "Taskbar"
+    case audio = "Audio"
     case tweaks = "System Tweaks"
     case permissions = "Permissions"
     case about = "About"
@@ -20,6 +21,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .keyboard: return "keyboard"
         case .windows: return "macwindow"
         case .taskbar: return "dock.rectangle"
+        case .audio: return "speaker.wave.2"
         case .tweaks: return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .about: return "info.circle"
@@ -54,6 +56,7 @@ struct SettingsView: View {
                     case .keyboard: KeyboardPane(features: features, swap: features.keyboard.modifierSwap, browsers: features.browserShortcuts)
                     case .windows: WindowsPane(features: features)
                     case .taskbar: TaskbarPane(features: features)
+                    case .audio: AudioPane(features: features)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
                     case .about: AboutPane(features: features)
@@ -391,6 +394,24 @@ private struct TaskbarPane: View {
 
             Text("Coming next: pinning your own apps, and auto-hide vs. reserved-space modes.")
                 .font(.callout).foregroundStyle(.tertiary)
+        }
+    }
+}
+
+private struct AudioPane: View {
+    @ObservedObject var features: FeatureManager
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PaneHeader("Audio", "Make the volume keys work for outputs macOS treats as fixed-volume (e.g. HDMI monitor speakers).")
+
+            Toggle("Software volume (Windows-style)", isOn: $features.softwareVolumeEnabled)
+            Text("Taps system audio and attenuates it in software before the output, so the volume keys change loudness while the monitor's own volume stays untouched. No driver installed. Needs macOS 14.2+ and the audio-recording permission.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            Divider()
+            Toggle("Control external monitor volume (DDC)", isOn: $features.monitorVolumeEnabled)
+            Text("Alternative: sends DDC commands to change the monitor's own speaker volume. Apple Silicon only, and it changes the monitor's setting — so don't use it if you switch the monitor to another computer. Prefer the software option above.")
+                .font(.callout).foregroundStyle(.secondary)
         }
     }
 }

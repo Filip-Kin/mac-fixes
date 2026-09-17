@@ -229,12 +229,9 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
     }
 
     private func openActivityMonitor() {
+        // Ctrl+Shift+Esc opens the Mac Fixes Task Manager (Windows-style).
         DispatchQueue.main.async {
-            guard let url = NSWorkspace.shared.urlForApplication(
-                withBundleIdentifier: "com.apple.ActivityMonitor") else { return }
-            let config = NSWorkspace.OpenConfiguration()
-            config.activates = true
-            NSWorkspace.shared.openApplication(at: url, configuration: config)
+            NotificationCenter.default.post(name: .openTaskManager, object: nil)
         }
     }
 

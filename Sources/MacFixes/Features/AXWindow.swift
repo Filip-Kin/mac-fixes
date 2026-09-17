@@ -164,6 +164,35 @@ enum AXWindow {
         return nil
     }
 
+    /// Press the app's menu item with one of these exact titles (e.g. "New
+    /// Window"), so it works regardless of the app's shortcut. Returns false if
+    /// no such item exists.
+    @discardableResult
+    static func pressMenuItem(pid: pid_t, titled titles: [String]) -> Bool {
+        let app = AXUIElementCreateApplication(pid)
+        var barRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &barRef) == .success,
+              let bar = barRef, CFGetTypeID(bar) == AXUIElementGetTypeID() else { return false }
+        return pressInMenu(bar as! AXUIElement, titles: Set(titles), depth: 0)
+    }
+
+    private static func pressInMenu(_ element: AXUIElement, titles: Set<String>, depth: Int) -> Bool {
+        guard depth < 6 else { return false }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return false }
+        for child in children {
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(child, kAXTitleAttribute as CFString, &titleRef)
+            if let title = titleRef as? String, titles.contains(title),
+               AXUIElementPerformAction(child, kAXPressAction as CFString) == .success {
+                return true
+            }
+            if pressInMenu(child, titles: titles, depth: depth + 1) { return true }
+        }
+        return false
+    }
+
     /// Bring one specific window to the front (and its app with it).
     static func raise(_ window: AXUIElement, pid: pid_t) {
         NSRunningApplication(processIdentifier: pid)?.activate(options: [])

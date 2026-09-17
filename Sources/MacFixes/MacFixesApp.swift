@@ -35,6 +35,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(forName: .keepAwakeChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatusIcon() }
         }
+        NotificationCenter.default.addObserver(forName: .openTaskManager, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.features.taskManager.open() }
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        // macfixes://taskmanager (from the standalone Task Manager.app launcher).
+        if urls.contains(where: { $0.scheme == "macfixes" && ($0.host == "taskmanager" || $0.path.contains("taskmanager")) }) {
+            features.taskManager.open()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -69,6 +79,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Rebuild on every open so shortcut hints and the toggle state stay current.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+
+        if features.softwareVolumeEnabled {
+            let item = NSMenuItem()
+            let container = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 30))
+            let icon = NSImageView(frame: NSRect(x: 12, y: 6, width: 18, height: 18))
+            icon.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: nil)
+            icon.contentTintColor = .secondaryLabelColor
+            let slider = NSSlider(value: Double(features.softwareVolume.currentVolume), minValue: 0, maxValue: 1,
+                                  target: self, action: #selector(volumeSliderChanged(_:)))
+            slider.frame = NSRect(x: 36, y: 4, width: 172, height: 22)
+            container.addSubview(icon)
+            container.addSubview(slider)
+            item.view = container
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
 
         if features.capture.isRecording {
             let stop = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
@@ -116,6 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(awakeItem)
 
         menu.addItem(.separator())
+
+        let taskMgr = NSMenuItem(title: "Task Manager", action: #selector(openTaskManager), keyEquivalent: "")
+        taskMgr.target = self
+        menu.addItem(taskMgr)
 
         let settings = NSMenuItem(title: "Settings…",
                                   action: #selector(openSettings), keyEquivalent: "")
@@ -171,6 +201,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let action = allCaptureActions.first(where: { $0.id == id }) else { return }
         features.capture.perform(action)
     }
+    @objc private func volumeSliderChanged(_ sender: NSSlider) {
+        features.softwareVolume.setVolumeFromMenu(Float(sender.doubleValue))
+    }
     @objc private func stopRecording() { features.capture.stopRecording() }
     @objc private func openClipboard() { features.clipboard.showPanel() }
     @objc private func keepAwakeOff() { KeepAwake.shared.stop() }
@@ -180,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func cancelRecording() { features.capture.cancelRecording() }
 
+    @objc private func openTaskManager() { features.taskManager.open() }
     @objc private func openSettings() { showSettings() }
 
     /// Open Settings, optionally jumping to a specific pane.
