@@ -17,6 +17,8 @@ final class SeamResizer: @unchecked Sendable {
     fileprivate var winB: AXUIElement?   // right or bottom
     fileprivate var frameA0: CGRect = .zero
     fileprivate var frameB0: CGRect = .zero
+    private var previewWin: NSWindow?
+    private var lastDivider: CGFloat = 0
 
     private let seamTolerance: CGFloat = 12   // how close two edges count as touching
     private let grab: CGFloat = 8             // how close the click must be to the seam
@@ -57,6 +59,7 @@ final class SeamResizer: @unchecked Sendable {
         CFMachPortInvalidate(tap)
         self.tap = nil
         resizing = false
+        hidePreview()
     }
 
     fileprivate func reenable() { if let tap { CGEvent.tapEnable(tap: tap, enable: true) } }
@@ -72,27 +75,75 @@ final class SeamResizer: @unchecked Sendable {
         winA = a; winB = b
         frameA0 = seam.a; frameB0 = seam.b
         resizing = true
+        lastDivider = clampDivider(vertical ? cursor.x : cursor.y)
+        showPreview(previewRect(lastDivider))
         return true
     }
 
+    /// During the drag only move a preview line — resizing a heavy app (VSCode)
+    /// on every event stalls the tap and the seam lags behind the cursor.
     fileprivate func update(to cursor: CGPoint) {
-        guard let a = winA, let b = winB else { return }
+        guard resizing else { return }
+        lastDivider = clampDivider(vertical ? cursor.x : cursor.y)
+        showPreview(previewRect(lastDivider))
+    }
+
+    /// Apply the resize once, on release.
+    fileprivate func end() {
+        hidePreview()
+        if let a = winA, let b = winB {
+            if vertical {
+                AXWindow.setFrame(a, CGRect(x: frameA0.minX, y: frameA0.minY,
+                                            width: lastDivider - frameA0.minX, height: frameA0.height))
+                AXWindow.setFrame(b, CGRect(x: lastDivider, y: frameB0.minY,
+                                            width: frameB0.maxX - lastDivider, height: frameB0.height))
+            } else {
+                AXWindow.setFrame(a, CGRect(x: frameA0.minX, y: frameA0.minY,
+                                            width: frameA0.width, height: lastDivider - frameA0.minY))
+                AXWindow.setFrame(b, CGRect(x: frameB0.minX, y: lastDivider,
+                                            width: frameB0.width, height: frameB0.maxY - lastDivider))
+            }
+        }
+        resizing = false; winA = nil; winB = nil
+    }
+
+    private func clampDivider(_ v: CGFloat) -> CGFloat {
+        vertical ? min(max(v, frameA0.minX + minSize), frameB0.maxX - minSize)
+                 : min(max(v, frameA0.minY + minSize), frameB0.maxY - minSize)
+    }
+
+    /// The preview line rect in AX (top-left) coords, spanning the shared edge.
+    private func previewRect(_ divider: CGFloat) -> CGRect {
         if vertical {
-            let divider = min(max(cursor.x, frameA0.minX + minSize), frameB0.maxX - minSize)
-            AXWindow.setFrame(a, CGRect(x: frameA0.minX, y: frameA0.minY,
-                                        width: divider - frameA0.minX, height: frameA0.height))
-            AXWindow.setFrame(b, CGRect(x: divider, y: frameB0.minY,
-                                        width: frameB0.maxX - divider, height: frameB0.height))
+            let top = max(frameA0.minY, frameB0.minY), bottom = min(frameA0.maxY, frameB0.maxY)
+            return CGRect(x: divider - 2, y: top, width: 4, height: bottom - top)
         } else {
-            let divider = min(max(cursor.y, frameA0.minY + minSize), frameB0.maxY - minSize)
-            AXWindow.setFrame(a, CGRect(x: frameA0.minX, y: frameA0.minY,
-                                        width: frameA0.width, height: divider - frameA0.minY))
-            AXWindow.setFrame(b, CGRect(x: frameB0.minX, y: divider,
-                                        width: frameB0.width, height: frameB0.maxY - divider))
+            let left = max(frameA0.minX, frameB0.minX), right = min(frameA0.maxX, frameB0.maxX)
+            return CGRect(x: left, y: divider - 2, width: right - left, height: 4)
         }
     }
 
-    fileprivate func end() { resizing = false; winA = nil; winB = nil }
+    // Tap callbacks run on the main run loop, so touching AppKit here is safe.
+    private func showPreview(_ axRect: CGRect) {
+        MainActor.assumeIsolated {
+            let rect = AXWindow.toBottomLeft(axRect)
+            if previewWin == nil {
+                let w = NSWindow(contentRect: rect, styleMask: .borderless, backing: .buffered, defer: false)
+                w.isOpaque = false; w.backgroundColor = .clear; w.ignoresMouseEvents = true
+                w.level = .floating; w.hasShadow = false
+                w.contentView?.wantsLayer = true
+                w.contentView?.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.9).cgColor
+                w.contentView?.layer?.cornerRadius = 2
+                previewWin = w
+            }
+            previewWin?.setFrame(rect, display: true)
+            previewWin?.orderFront(nil)
+        }
+    }
+
+    private func hidePreview() {
+        MainActor.assumeIsolated { previewWin?.orderOut(nil) }
+    }
 
     private func detectSeam(at cursor: CGPoint) -> (vertical: Bool, a: CGRect, b: CGRect)? {
         let all = CGRect(x: -100_000, y: -100_000, width: 200_000, height: 200_000)
