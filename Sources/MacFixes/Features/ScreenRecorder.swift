@@ -35,8 +35,12 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         self.startPTS = nil
 
         let content = try await SCShareableContent.current
-        guard let display = content.displays.first else { throw RecorderError.noDisplay }
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        // Pick the display that actually contains the selected region (its frame
+        // is in the same global top-left space as `area`), not always the main.
+        let center = CGPoint(x: area.midX, y: area.midY)
+        guard let display = content.displays.first(where: { $0.frame.contains(center) })
+            ?? content.displays.first else { throw RecorderError.noDisplay }
+        let scale = NSScreen.screens.first(where: { $0.displayID == display.displayID })?.backingScaleFactor ?? 2
 
         // Crop rectangle in the display's point space (main display origin = 0,0).
         let sourceRect = CGRect(x: area.minX - CGFloat(display.frame.minX),

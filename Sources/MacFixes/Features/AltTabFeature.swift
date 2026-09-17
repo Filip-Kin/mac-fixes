@@ -160,7 +160,9 @@ final class AltTabModel: ObservableObject, @unchecked Sendable {
             guard let app = NSRunningApplication(processIdentifier: w.pid),
                   app.activationPolicy == .regular else { continue }
             if axByPid[w.pid] == nil { axByPid[w.pid] = AXWindow.axWindowsByID(pid: w.pid) }
-            guard let el = axByPid[w.pid]?[w.id] else { continue }   // exact per-window element
+            // Exact per-window element when available; fall back to frame match so
+            // the switcher never comes up empty if the private call misses.
+            guard let el = axByPid[w.pid]?[w.id] ?? AXWindow.element(pid: w.pid, matchingFrame: w.frame) else { continue }
             if nameByPid[w.pid] == nil {
                 nameByPid[w.pid] = app.localizedName ?? "App"
                 iconByPid[w.pid] = app.icon

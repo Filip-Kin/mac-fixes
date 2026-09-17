@@ -3,33 +3,56 @@ import AppKit
 /// A full-screen overlay to drag-select a rectangle. Returns the selection in
 /// global top-left (AX) coordinates, or nil if cancelled with Escape.
 final class AreaSelector: @unchecked Sendable {
-    private var window: NSWindow?
+    private var windows: [NSWindow] = []
     private var completion: ((CGRect?) -> Void)?
+    private var escMonitor: Any?
+    private var done = false
 
     // Always invoked on the main run loop (hotkey callback / menu action).
     func select(_ completion: @escaping (CGRect?) -> Void) {
         self.completion = completion
+        self.done = false
         MainActor.assumeIsolated {
-            let union = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
+            // One overlay per screen — a single window can't span displays when
+            // "Displays have separate Spaces" is on (the macOS default).
+            for screen in NSScreen.screens {
+                let frame = screen.frame
+                let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+                window.level = .screenSaver
+                window.backgroundColor = .clear
+                window.isOpaque = false
+                window.ignoresMouseEvents = false
+                window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
 
-            let window = NSWindow(contentRect: union, styleMask: .borderless, backing: .buffered, defer: false)
-            window.level = .screenSaver
-            window.backgroundColor = .clear
-            window.isOpaque = false
-            window.ignoresMouseEvents = false
-
-            let view = SelectionView(frame: CGRect(origin: .zero, size: union.size))
-            view.onFinish = { [weak self] rectInView in self?.finish(rectInView, windowOrigin: union.origin) }
-            window.contentView = view
-            window.makeKeyAndOrderFront(nil)
+                let view = SelectionView(frame: CGRect(origin: .zero, size: frame.size))
+                view.onFinish = { [weak self] rectInView in self?.finish(rectInView, windowOrigin: frame.origin) }
+                window.contentView = view
+                window.orderFrontRegardless()
+                window.makeFirstResponder(view)
+                windows.append(window)
+            }
             NSApp.activate(ignoringOtherApps: true)
-            window.makeFirstResponder(view)
-            self.window = window
+            // Make the screen under the cursor key so it receives Escape.
+            let cursor = NSEvent.mouseLocation
+            (windows.first { $0.frame.contains(cursor) } ?? windows.first)?.makeKey()
+            // Reliable Escape, whichever overlay is key.
+            escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+                if e.keyCode == 53 { self?.finish(nil, windowOrigin: .zero); return nil }
+                return e
+            }
         }
     }
 
     private func finish(_ rectInView: CGRect?, windowOrigin: CGPoint) {
-        MainActor.assumeIsolated { window?.orderOut(nil); window = nil }
+        var shouldReturn = false
+        MainActor.assumeIsolated {
+            guard !done else { shouldReturn = true; return }
+            done = true
+            if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
+            for w in windows { w.orderOut(nil) }
+            windows = []
+        }
+        if shouldReturn { return }
         guard let r = rectInView, r.width > 4, r.height > 4 else { completion?(nil); completion = nil; return }
 
         // View coords (bottom-left, window-relative) -> global bottom-left -> top-left.
