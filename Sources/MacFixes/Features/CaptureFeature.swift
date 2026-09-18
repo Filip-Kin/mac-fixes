@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import ScreenCaptureKit
 
 extension Notification.Name {
     static let recordingStateChanged = Notification.Name("macfixes.recordingStateChanged")
@@ -125,20 +126,71 @@ final class CaptureFeature: Feature, @unchecked Sendable {
 
     private func performShot(_ target: CaptureTarget) {
         let url = destURL(prefix: "Screenshot", ext: "png")
-        var args: [String]
         switch target {
-        case .area:   args = ["-i"]
-        case .window: args = ["-iw", "-o"]
+        case .area:
+            // Freeze the screen at trigger time, then let the user pick a region
+            // against that snapshot (snaps to windows/panes, ShareX-style). The
+            // result is cropped from the frozen bitmap, so it captures the moment
+            // the tool was invoked, not whatever changed during selection.
+            guard Permissions.hasScreenRecording else {
+                Permissions.requestScreenRecording()
+                Permissions.openSettings(.screenRecording)
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let images = await self.captureAllDisplays()
+                self.selector.selectFrozen(images: images) { cg in
+                    guard let cg else { return }
+                    self.saveCGImage(cg, to: url)
+                }
+            }
+        case .window:
+            runScreencapture(["-iw", "-o"], url: url)
         case .screen:
             // Capture the screen holding the focused window (not always main).
             let r = AXWindow.axFullFrame(AXWindow.focusedScreen())
-            args = ["-R\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width)),\(Int(r.height))"]
+            runScreencapture(rectArgs(r), url: url)
         }
-        args += [url.path]
+    }
 
+    /// `screencapture -R x,y,w,h <path>` — rect in AX (top-left) coordinates.
+    private func rectArgs(_ r: CGRect) -> [String] {
+        ["-R\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width)),\(Int(r.height))"]
+    }
+
+    /// A full-resolution snapshot of every display, keyed by display id.
+    @MainActor
+    private func captureAllDisplays() async -> [CGDirectDisplayID: CGImage] {
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return [:] }
+        var out: [CGDirectDisplayID: CGImage] = [:]
+        for display in content.displays {
+            let scale = NSScreen.screens.first { $0.displayID == display.displayID }?.backingScaleFactor ?? 2
+            let cfg = SCStreamConfiguration()
+            cfg.width = Int(CGFloat(display.width) * scale)
+            cfg.height = Int(CGFloat(display.height) * scale)
+            cfg.showsCursor = false
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            if let cg = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg) {
+                out[display.displayID] = cg
+            }
+        }
+        return out
+    }
+
+    private func saveCGImage(_ cg: CGImage, to url: URL) {
+        let rep = NSBitmapImageRep(cgImage: cg)
+        guard let png = rep.representation(using: .png, properties: [:]) else { return }
+        do {
+            try png.write(to: url)
+            handleOutput(url, isImage: true)
+        } catch { NSLog("save screenshot failed: \(error)") }
+    }
+
+    private func runScreencapture(_ args: [String], url: URL) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        p.arguments = args
+        p.arguments = args + [url.path]
         p.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async {
                 guard FileManager.default.fileExists(atPath: url.path) else { return }

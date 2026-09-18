@@ -14,6 +14,7 @@ final class AltTabFeature: Feature, @unchecked Sendable {
     private var panel: AltTabPanel?
     private let model = AltTabModel()
     private var shown = false
+    private var watchdog: Timer?
 
     @discardableResult
     func start() -> Bool {
@@ -40,12 +41,23 @@ final class AltTabFeature: Feature, @unchecked Sendable {
             let p = AltTabPanel(model: model)
             panel = p
             model.onCommit = { [weak self] in MainActor.assumeIsolated { self?.commit() } }
+            // Watchdog: macOS can silently disable the tap (App Nap, timeouts,
+            // user input) with no callback while the switcher is idle. Re-arm it.
+            let w = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let t = self.tap, !CGEvent.tapIsEnabled(tap: t) else { return }
+                    CGEvent.tapEnable(tap: t, enable: true)
+                }
+            }
+            RunLoop.main.add(w, forMode: .common)
+            watchdog = w
             return true
         }
     }
 
     func stop() {
         MainActor.assumeIsolated {
+            watchdog?.invalidate(); watchdog = nil
             if let t = tap {
                 CGEvent.tapEnable(tap: t, enable: false)
                 if let s = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0) {

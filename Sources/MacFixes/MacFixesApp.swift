@@ -20,9 +20,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var features: FeatureManager { .shared }
+    private var activityToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar only, no dock icon
+        // Stop App Nap from suspending our run loop — that silently kills the
+        // global event taps (Alt-Tab, keyboard shortcuts) until the next event.
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated],
+            reason: "Global input event taps must keep receiving events")
         features.bootstrap()
         // Right-click empty taskbar space opens Settings on the Taskbar pane.
         features.taskbar.setOpenSettingsAction { [weak self] in
