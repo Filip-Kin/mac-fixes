@@ -14,10 +14,20 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
     private var ioProcID: AudioDeviceIOProcID?
     private var keyTap: CFMachPort?
 
-    // Read on the real-time audio thread; a plain value is fine for volume.
+    // `gain` is the linear multiplier applied on the real-time audio thread;
+    // `volume` is the 0…1 slider position it is derived from (perceptual curve).
     fileprivate var gain: Float = 1.0
+    private var volume: Float = 1.0
     fileprivate var muted = false
-    private let step: Float = 0.06
+    private let step: Float = 0.0625   // 16 steps across the range
+    private var savedDeviceVolume: Float?
+
+    /// Perceptual taper: slider position -> linear gain over a ~60 dB range, so
+    /// each step down is an equal-sounding drop instead of a tiny linear one.
+    static func gain(for v: Float) -> Float {
+        let c = min(1, max(0, v))
+        return c <= 0.0005 ? 0 : Float(pow(10.0, Double(c - 1) * 3.0))
+    }
 
     private let soundUp = 0, soundDown = 1, mute = 7
 
@@ -29,10 +39,20 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
             return false
         }
         guard setupTap() else { return false }
-        return installKeyTap()
+        guard installKeyTap() else { return false }
+        // Take the hardware output to 100% so software gain has the full range,
+        // and carry the old level over as our starting position (errs quiet,
+        // never loud). The device stays at 100% because the volume keys are now
+        // swallowed and drive software gain instead.
+        savedDeviceVolume = Self.defaultOutputVolume()
+        volume = min(1, max(0, savedDeviceVolume ?? 1.0))
+        gain = Self.gain(for: volume)
+        Self.setDefaultOutputVolume(1.0)
+        return true
     }
 
     func stop() {
+        if let v = savedDeviceVolume { Self.setDefaultOutputVolume(v); savedDeviceVolume = nil }
         if let p = ioProcID, aggID != 0 {
             AudioDeviceStop(aggID, p)
             AudioDeviceDestroyIOProcID(aggID, p)
@@ -137,7 +157,7 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         return (st == noErr && obj != 0) ? [obj] : []
     }
 
-    private static func defaultOutputUID() -> String? {
+    private static func defaultOutputDeviceID() -> AudioObjectID? {
         var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
                                               mScope: kAudioObjectPropertyScopeGlobal,
                                               mElement: kAudioObjectPropertyElementMain)
@@ -145,6 +165,11 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         var size = UInt32(MemoryLayout<AudioObjectID>.size)
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &dev) == noErr,
               dev != 0 else { return nil }
+        return dev
+    }
+
+    private static func defaultOutputUID() -> String? {
+        guard let dev = defaultOutputDeviceID() else { return nil }
         var uidAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
                                                  mScope: kAudioObjectPropertyScopeGlobal,
                                                  mElement: kAudioObjectPropertyElementMain)
@@ -152,6 +177,45 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         var usize = UInt32(MemoryLayout<CFString?>.size)
         guard AudioObjectGetPropertyData(dev, &uidAddr, 0, nil, &usize, &uid) == noErr, let uid else { return nil }
         return uid as String
+    }
+
+    /// The current hardware output volume (master, else channel 1), 0…1.
+    private static func defaultOutputVolume() -> Float? {
+        guard let dev = defaultOutputDeviceID() else { return nil }
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                              mScope: kAudioDevicePropertyScopeOutput,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var v: Float = 0
+        var size = UInt32(MemoryLayout<Float>.size)
+        if AudioObjectHasProperty(dev, &addr),
+           AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &v) == noErr { return v }
+        addr.mElement = 1
+        if AudioObjectHasProperty(dev, &addr),
+           AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &v) == noErr { return v }
+        return nil
+    }
+
+    /// Set the hardware output volume (master if settable, else each channel).
+    private static func setDefaultOutputVolume(_ value: Float) {
+        guard let dev = defaultOutputDeviceID() else { return }
+        var v = max(0, min(1, value))
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                              mScope: kAudioDevicePropertyScopeOutput,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var settable: DarwinBoolean = false
+        if AudioObjectHasProperty(dev, &addr),
+           AudioObjectIsPropertySettable(dev, &addr, &settable) == noErr, settable.boolValue {
+            AudioObjectSetPropertyData(dev, &addr, 0, nil, UInt32(MemoryLayout<Float>.size), &v)
+            return
+        }
+        for ch in [UInt32(1), UInt32(2)] {
+            addr.mElement = ch
+            var s: DarwinBoolean = false
+            if AudioObjectHasProperty(dev, &addr),
+               AudioObjectIsPropertySettable(dev, &addr, &s) == noErr, s.boolValue {
+                AudioObjectSetPropertyData(dev, &addr, 0, nil, UInt32(MemoryLayout<Float>.size), &v)
+            }
+        }
     }
 
     // MARK: Volume media keys
@@ -181,8 +245,8 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         if ((ns.data1 & 0xFF00) >> 8) == 0x0A {   // key down
             MainActor.assumeIsolated {
                 switch keyCode {
-                case soundUp:   setGain(gain + step, bop: true)
-                case soundDown: setGain(gain - step, bop: true)
+                case soundUp:   setVolume(volume + step, bop: true)
+                case soundDown: setVolume(volume - step, bop: true)
                 case mute:      muted.toggle(); feedback(bop: false)
                 default:        break
                 }
@@ -194,23 +258,28 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
     // MARK: Volume + feedback (HUD, "bop", menu slider)
 
     private let hud = VolumeHUD()
-    private lazy var bopSound = NSSound(named: "Pop")
+    // The stock macOS volume-change "pock"; fall back to Pop if unavailable.
+    private lazy var bopSound: NSSound? =
+        NSSound(contentsOfFile: "/System/Library/LoginPlugins/BezelServices.loginPlugin/Contents/Resources/volume.aiff",
+                byReference: true) ?? NSSound(named: "Pop")
 
-    var currentVolume: Float { gain }
+    var currentVolume: Float { volume }
     var isMuted: Bool { muted }
 
-    @MainActor func setVolumeFromMenu(_ v: Float) { setGain(v, bop: false) }
+    @MainActor func setVolumeFromMenu(_ v: Float) { setVolume(v, bop: false) }
 
     @MainActor
-    private func setGain(_ v: Float, bop: Bool) {
+    private func setVolume(_ v: Float, bop: Bool) {
         muted = false
-        gain = min(1, max(0, v))
+        volume = min(1, max(0, v))
+        gain = Self.gain(for: volume)
         feedback(bop: bop)
     }
 
     @MainActor
     private func feedback(bop: Bool) {
-        hud.show(level: gain, muted: muted)
+        hud.show(level: volume, muted: muted)
+        // Play the click at the new gain so it previews the actual loudness.
         if bop, !muted, let s = bopSound { s.stop(); s.volume = gain; s.play() }
     }
 }
