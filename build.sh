@@ -35,8 +35,8 @@ cat > "$BUILD/$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key>   <string>Filip's Mac Fixes</string>
     <key>CFBundleExecutable</key>    <string>$BIN</string>
     <key>CFBundleIdentifier</key>    <string>$BUNDLE_ID</string>
-    <key>CFBundleVersion</key>       <string>1.1.0</string>
-    <key>CFBundleShortVersionString</key> <string>1.1.0</string>
+    <key>CFBundleVersion</key>       <string>1.1.1</string>
+    <key>CFBundleShortVersionString</key> <string>1.1.1</string>
     <key>CFBundlePackageType</key>   <string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key>           <true/>
