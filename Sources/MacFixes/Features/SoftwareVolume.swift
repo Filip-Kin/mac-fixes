@@ -20,7 +20,10 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
     private var volume: Float = 1.0
     fileprivate var muted = false
     private let step: Float = 0.0625   // 16 steps across the range
-    private var savedDeviceVolume: Float?
+    private var savedDeviceVolume: Float?      // volume to restore on the device we forced to 100%
+    private var savedDeviceID: AudioObjectID = 0
+    private var currentOutputUID: String?      // device the tap is currently built on
+    private var defaultDeviceListener: AudioObjectPropertyListenerBlock?
 
     /// Perceptual taper: slider position -> linear gain over a ~60 dB range, so
     /// each step down is an equal-sounding drop instead of a tiny linear one.
@@ -44,15 +47,78 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         // and carry the old level over as our starting position (errs quiet,
         // never loud). The device stays at 100% because the volume keys are now
         // swallowed and drive software gain instead.
-        savedDeviceVolume = Self.defaultOutputVolume()
+        forceCurrentDeviceToFull()
         volume = min(1, max(0, savedDeviceVolume ?? 1.0))
         gain = Self.gain(for: volume)
-        Self.setDefaultOutputVolume(1.0)
+        // Rebuild the tap onto the new device when the default output changes,
+        // otherwise audio keeps routing to the old device until toggled.
+        installDefaultDeviceListener()
         return true
     }
 
     func stop() {
-        if let v = savedDeviceVolume { Self.setDefaultOutputVolume(v); savedDeviceVolume = nil }
+        removeDefaultDeviceListener()
+        if savedDeviceID != 0, let v = savedDeviceVolume { Self.setDeviceVolume(savedDeviceID, v) }
+        savedDeviceVolume = nil; savedDeviceID = 0
+        teardownAudio()
+        if let t = keyTap {
+            CGEvent.tapEnable(tap: t, enable: false)
+            if let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0) {
+                CFRunLoopRemoveSource(CFRunLoopGetCurrent(), src, .commonModes)
+            }
+            CFMachPortInvalidate(t)
+            keyTap = nil
+        }
+    }
+
+    // MARK: Output-device switching
+
+    /// Save the current default output's volume and force it to 100%.
+    private func forceCurrentDeviceToFull() {
+        savedDeviceID = Self.defaultOutputDeviceID() ?? 0
+        savedDeviceVolume = savedDeviceID != 0 ? Self.deviceVolume(savedDeviceID) : nil
+        if savedDeviceID != 0 { Self.setDeviceVolume(savedDeviceID, 1.0) }
+    }
+
+    /// Tear down and rebuild the tap on the new default output. Without this the
+    /// aggregate device keeps replaying to the old device after a device switch.
+    private func handleDefaultDeviceChanged() {
+        guard #available(macOS 14.2, *) else { return }
+        let newUID = Self.defaultOutputUID()
+        guard newUID != currentOutputUID else { return }
+        trace("SoftwareVolume", "default output changed -> \(newUID ?? "nil"); rebuilding tap")
+        // Restore the device we're leaving, then take the new one to 100%.
+        if savedDeviceID != 0, let v = savedDeviceVolume { Self.setDeviceVolume(savedDeviceID, v) }
+        savedDeviceVolume = nil; savedDeviceID = 0
+        teardownAudio()
+        if setupTap() {
+            forceCurrentDeviceToFull()   // keeps the current software volume/gain as-is
+        } else {
+            trace("SoftwareVolume", "rebuild on new device failed")
+        }
+    }
+
+    private func installDefaultDeviceListener() {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleDefaultDeviceChanged()
+        }
+        defaultDeviceListener = block
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main, block)
+    }
+
+    private func removeDefaultDeviceListener() {
+        guard let block = defaultDeviceListener else { return }
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main, block)
+        defaultDeviceListener = nil
+    }
+
+    private func teardownAudio() {
         if let p = ioProcID, aggID != 0 {
             AudioDeviceStop(aggID, p)
             AudioDeviceDestroyIOProcID(aggID, p)
@@ -62,14 +128,7 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         if #available(macOS 14.2, *), tapID != 0 {
             AudioHardwareDestroyProcessTap(tapID); tapID = 0
         }
-        if let t = keyTap {
-            CGEvent.tapEnable(tap: t, enable: false)
-            if let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0) {
-                CFRunLoopRemoveSource(CFRunLoopGetCurrent(), src, .commonModes)
-            }
-            CFMachPortInvalidate(t)
-            keyTap = nil
-        }
+        currentOutputUID = nil
     }
 
     // MARK: Audio tap
@@ -139,6 +198,7 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
             trace("SoftwareVolume", "device start failed: \(ss)")
             return false
         }
+        currentOutputUID = outUID
         trace("SoftwareVolume", "tap running on \(outUID)")
         return true
     }
@@ -179,9 +239,9 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         return uid as String
     }
 
-    /// The current hardware output volume (master, else channel 1), 0…1.
-    private static func defaultOutputVolume() -> Float? {
-        guard let dev = defaultOutputDeviceID() else { return nil }
+    /// A device's output volume (master, else channel 1), 0…1.
+    private static func deviceVolume(_ dev: AudioObjectID) -> Float? {
+        guard dev != 0 else { return nil }
         var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
                                               mScope: kAudioDevicePropertyScopeOutput,
                                               mElement: kAudioObjectPropertyElementMain)
@@ -195,9 +255,9 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         return nil
     }
 
-    /// Set the hardware output volume (master if settable, else each channel).
-    private static func setDefaultOutputVolume(_ value: Float) {
-        guard let dev = defaultOutputDeviceID() else { return }
+    /// Set a device's output volume (master if settable, else each channel).
+    private static func setDeviceVolume(_ dev: AudioObjectID, _ value: Float) {
+        guard dev != 0 else { return }
         var v = max(0, min(1, value))
         var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
                                               mScope: kAudioDevicePropertyScopeOutput,

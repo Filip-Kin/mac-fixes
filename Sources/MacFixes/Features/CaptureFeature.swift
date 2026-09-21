@@ -42,6 +42,12 @@ let allCaptureActions: [CaptureAction] = CaptureTarget.allCases.flatMap { t in
 final class CaptureFeature: Feature, @unchecked Sendable {
     private let selector = AreaSelector()
     private let recorder = ScreenRecorder()
+
+    /// The stock screenshot camera-shutter sound.
+    private lazy var shutter: NSSound? =
+        NSSound(contentsOfFile: "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Screen Capture.aif",
+                byReference: true) ?? NSSound(named: "Grab")
+    private func playShutter() { shutter?.stop(); shutter?.play() }
     private let overlay = RecordingOverlay()
     private var hotKeyIDs: [UInt32] = []
     private let d = UserDefaults.standard
@@ -183,6 +189,7 @@ final class CaptureFeature: Feature, @unchecked Sendable {
         guard let png = rep.representation(using: .png, properties: [:]) else { return }
         do {
             try png.write(to: url)
+            playShutter()   // area capture is silent (SCK); window/screen use screencapture's own sound
             handleOutput(url, isImage: true)
         } catch { NSLog("save screenshot failed: \(error)") }
     }
@@ -248,7 +255,7 @@ final class CaptureFeature: Feature, @unchecked Sendable {
             NotificationCenter.default.post(name: .recordingStateChanged, object: nil)
             if let url {
                 await MainActor.run {
-                    NSSound(named: "Glass")?.play()
+                    self.playShutter()
                     self.handleOutput(url, isImage: false)
                 }
             }

@@ -13,13 +13,24 @@ final class AltTabFeature: Feature, @unchecked Sendable {
     private var tap: CFMachPort?
     private var panel: AltTabPanel?
     private let model = AltTabModel()
-    private var shown = false
-    private var watchdog: Timer?
+    private var shown = false                 // written on main, read on tap thread (Bool, atomic enough)
+    private var tapThread: Thread?
+    private var tapRunLoop: CFRunLoop?
 
     @discardableResult
     func start() -> Bool {
+        guard tapThread == nil else { return true }
+        // The panel and commit callback live on the main actor.
         MainActor.assumeIsolated {
-            guard tap == nil else { return true }
+            panel = AltTabPanel(model: model)
+            model.onCommit = { [weak self] in MainActor.assumeIsolated { self?.commit() } }
+        }
+        // Run the event tap on its own thread with its own run loop. Building the
+        // switcher and grabbing thumbnails happen on main; if that work stalls
+        // the main run loop, event delivery here is unaffected, so the tap never
+        // gets disabled for being slow — the recurring "Alt-Tab stopped" cause.
+        let thread = Thread { [weak self] in
+            guard let self else { return }
             let mask = CGEventMask(
                 (1 << CGEventType.keyDown.rawValue) |
                 (1 << CGEventType.keyUp.rawValue) |
@@ -31,65 +42,69 @@ final class AltTabFeature: Feature, @unchecked Sendable {
                                             eventsOfInterest: mask,
                                             callback: altTabCallback,
                                             userInfo: refcon) else {
-                Permissions.promptAccessibility()
-                return false
+                trace("AltTab", "tap create failed (accessibility not granted?)")
+                DispatchQueue.main.async { Permissions.promptAccessibility() }
+                return
             }
-            tap = t
+            self.tap = t
             let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
             CGEvent.tapEnable(tap: t, enable: true)
-            let p = AltTabPanel(model: model)
-            panel = p
-            model.onCommit = { [weak self] in MainActor.assumeIsolated { self?.commit() } }
-            // Watchdog: macOS can silently disable the tap (App Nap, timeouts,
-            // user input) with no callback while the switcher is idle. Re-arm it.
+            self.tapRunLoop = CFRunLoopGetCurrent()
+            // Watchdog on this same run loop: re-enable if macOS ever disables it.
             let w = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, let t = self.tap, !CGEvent.tapIsEnabled(tap: t) else { return }
+                guard let self, let t = self.tap else { return }
+                if !CGEvent.tapIsEnabled(tap: t) {
                     CGEvent.tapEnable(tap: t, enable: true)
+                    trace("AltTab", "watchdog re-enabled tap")
                 }
             }
-            RunLoop.main.add(w, forMode: .common)
-            watchdog = w
-            return true
+            RunLoop.current.add(w, forMode: .common)
+            trace("AltTab", "tap running on dedicated thread")
+            CFRunLoopRun()
+            trace("AltTab", "tap run loop exited")
         }
+        thread.name = "com.filipkin.macfixes.alttab"
+        thread.qualityOfService = .userInteractive
+        tapThread = thread
+        thread.start()
+        return true
     }
 
     func stop() {
-        MainActor.assumeIsolated {
-            watchdog?.invalidate(); watchdog = nil
-            if let t = tap {
-                CGEvent.tapEnable(tap: t, enable: false)
-                if let s = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0) {
-                    CFRunLoopRemoveSource(CFRunLoopGetCurrent(), s, .commonModes)
-                }
-                CFMachPortInvalidate(t)
-                tap = nil
-            }
-            cancel()
-            panel = nil
-        }
+        if let t = tap { CGEvent.tapEnable(tap: t, enable: false); CFMachPortInvalidate(t); tap = nil }
+        if let rl = tapRunLoop { CFRunLoopStop(rl); tapRunLoop = nil }
+        tapThread = nil
+        MainActor.assumeIsolated { cancel(); panel = nil }
     }
 
     fileprivate func reenable() { if let t = tap { CGEvent.tapEnable(tap: t, enable: true) } }
 
-    /// Returns true to swallow the event.
+    /// Runs on the tap thread. Returns true to swallow the event; all UI work is
+    /// dispatched to the main actor.
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Bool {
         switch type {
         case .flagsChanged:
             if shown, !event.flags.contains(.maskAlternate) {
-                MainActor.assumeIsolated { self.commit() }
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.commit() } }
             }
             return false
         case .keyDown:
             let code = event.getIntegerValueField(.keyboardEventKeycode)
+            if code == Int64(kVK_Tab) {
+                let f = event.flags
+                // Only log modifier+Tab (a switch attempt), not plain Tab typing.
+                if f.contains(.maskAlternate) || f.contains(.maskCommand) || f.contains(.maskControl) {
+                    trace("AltTab", "Tab down flags=0x\(String(f.rawValue, radix: 16)) alt=\(f.contains(.maskAlternate)) cmd=\(f.contains(.maskCommand)) ctrl=\(f.contains(.maskControl))")
+                }
+            }
             if code == Int64(kVK_Tab), event.flags.contains(.maskAlternate) {
                 let shift = event.flags.contains(.maskShift)
-                MainActor.assumeIsolated { self.onTab(shift: shift) }
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.onTab(shift: shift) } }
                 return true
             }
             if code == Int64(kVK_Escape), shown {
-                MainActor.assumeIsolated { self.cancel() }
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.cancel() } }
                 return true
             }
             return false
@@ -107,6 +122,7 @@ final class AltTabFeature: Feature, @unchecked Sendable {
 
     @MainActor private func showOverlay() {
         model.build()
+        trace("AltTab", "showOverlay windows=\(model.windows.count)")
         let cursor = NSEvent.mouseLocation
         guard !model.windows.isEmpty, let panel,
               let screen = NSScreen.screens.first(where: { $0.frame.contains(cursor) })
@@ -114,13 +130,19 @@ final class AltTabFeature: Feature, @unchecked Sendable {
         panel.setFrame(screen.frame, display: true)
         panel.orderFrontRegardless()
         shown = true
+        trace("AltTab", "panel ordered front vis=\(panel.isVisible) level=\(panel.level.rawValue) frame=\(NSStringFromRect(panel.frame))")
     }
 
     @MainActor private func commit() {
         guard shown else { return }
         shown = false
         panel?.orderOut(nil)
-        if let w = model.selected() { AXWindow.raise(w.element, pid: w.pid) }
+        if let w = model.selected() {
+            trace("AltTab", "commit raise \"\(w.title)\" pid=\(w.pid)")
+            AXWindow.raise(w.element, pid: w.pid)
+        } else {
+            trace("AltTab", "commit no selection")
+        }
         model.clear()
     }
 

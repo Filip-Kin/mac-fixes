@@ -95,6 +95,7 @@ final class AreaSelector: @unchecked Sendable {
     @MainActor
     private func activateAndArmEscape() {
         NSApp.activate(ignoringOtherApps: true)
+        NSCursor.crosshair.set()
         let cursor = NSEvent.mouseLocation
         (windows.first { $0.frame.contains(cursor) } ?? windows.first)?.makeKey()
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
@@ -163,16 +164,20 @@ private final class SelectionView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.activeAlways, .mouseMoved, .inVisibleRect],
+                                       options: [.activeAlways, .mouseMoved, .cursorUpdate, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
 
+    override func mouseEntered(with event: NSEvent) { NSCursor.crosshair.set() }
+
     override func mouseMoved(with event: NSEvent) {
+        NSCursor.crosshair.set()             // keep the crosshair even over panes
         guard start == nil else { return }   // not while pressing/dragging
         updateSnap()
     }
