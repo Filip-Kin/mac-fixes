@@ -44,6 +44,22 @@ cat > "$BUILD/$APP/Contents/Info.plist" <<PLIST
     <string>Filip's Mac Fixes uses screen capture for screenshots and screen recording.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Filip's Mac Fixes records the microphone when you enable audio in a screen recording.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Filip's Mac Fixes asks System Events to sleep, restart or shut down the Mac from the Start menu, and Finder to open windows.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Filip's Mac Fixes finds your phone on the local network to send files and share the clipboard.</string>
+    <key>NSBonjourServices</key>
+    <array><string>_kdeconnect._udp</string></array>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>        <dict><key>default</key><string>Send to Phone</string></dict>
+            <key>NSMessage</key>         <string>sendToPhone</string>
+            <key>NSPortName</key>        <string>Filip's Mac Fixes</string>
+            <key>NSSendFileTypes</key>   <array><string>public.item</string></array>
+            <key>NSRequiredContext</key> <dict/>
+        </dict>
+    </array>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

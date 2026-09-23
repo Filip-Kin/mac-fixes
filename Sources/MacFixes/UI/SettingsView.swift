@@ -8,6 +8,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case windows = "Windows"
     case taskbar = "Taskbar"
     case audio = "Audio"
+    case phone = "Phone"
     case tweaks = "System Tweaks"
     case permissions = "Permissions"
     case about = "About"
@@ -22,6 +23,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .windows: return "macwindow"
         case .taskbar: return "dock.rectangle"
         case .audio: return "speaker.wave.2"
+        case .phone: return "iphone"
         case .tweaks: return "slider.horizontal.3"
         case .permissions: return "lock.shield"
         case .about: return "info.circle"
@@ -57,6 +59,7 @@ struct SettingsView: View {
                     case .windows: WindowsPane(features: features)
                     case .taskbar: TaskbarPane(features: features)
                     case .audio: AudioPane(features: features)
+                    case .phone: PhonePane(features: features, connect: features.connect)
                     case .tweaks: TweaksPane(tweaks: features.tweaks)
                     case .permissions: PermissionsPane()
                     case .about: AboutPane(features: features)
@@ -416,6 +419,84 @@ private struct AudioPane: View {
     }
 }
 
+private struct PhonePane: View {
+    @ObservedObject var features: FeatureManager
+    @ObservedObject var connect: ConnectFeature
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PaneHeader("Phone", "Send files and share the clipboard with an Android phone running Zorin Connect or KDE Connect.")
+            Toggle("Enable phone link", isOn: $features.connectEnabled)
+            Text("Works over your local network: the phone and this Mac need to be on the same Wi-Fi. Nothing goes through the internet. The first time, macOS asks to allow local network access; say yes.")
+                .font(.callout).foregroundStyle(.secondary)
+
+            if features.connectEnabled {
+                HStack {
+                    Image(systemName: connect.devices.contains { $0.paired && $0.connected } ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
+                        .foregroundStyle(connect.devices.contains { $0.paired && $0.connected } ? .green : .secondary)
+                    Text(connect.status)
+                    Spacer()
+                    Button("Search again") { connect.broadcastIdentity() }
+                }
+                if let transfer = connect.transfer {
+                    Text(transfer).font(.callout).foregroundStyle(.secondary)
+                }
+
+                Divider()
+                if connect.devices.isEmpty {
+                    Text("No phones found yet. Open Zorin Connect on your phone; this Mac shows up there as \"\(connect.deviceName)\". Tap it and choose Pair, or pair from here once the phone appears.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ForEach(connect.devices) { d in PhoneRow(device: d, connect: connect) }
+                }
+
+                Divider()
+                Toggle("Share the clipboard", isOn: Binding(get: { connect.clipboardSync }, set: { connect.clipboardSync = $0 }))
+                Text("Text you copy on this Mac is sent to paired phones, and text sent from the phone lands on this Mac's clipboard. Passwords copied from password managers are never sent. Android only lets the app read its clipboard when you tap Send clipboard in the app.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("Received files are saved to \(connect.downloadFolder.path). To send, use the menu bar item or right-click files in Finder and choose Services › Send to Phone.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct PhoneRow: View {
+    let device: ConnectFeature.DeviceRow
+    @ObservedObject var connect: ConnectFeature
+
+    var body: some View {
+        HStack(alignment: .top) {
+            Image(systemName: device.type == "tablet" ? "ipad" : device.type == "phone" ? "iphone" : "desktopcomputer")
+                .foregroundStyle(device.connected ? .primary : .secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(device.name).fontWeight(.medium)
+                Text(detail).font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer()
+            switch (device.paired, device.pairing) {
+            case (true, _):
+                if device.connected { Button("Send Files…") { connect.chooseAndSend(to: device.id) } }
+                Button("Unpair", role: .destructive) { connect.unpair(device.id) }
+            case (false, .none):
+                Button("Pair") { connect.requestPairing(device.id) }
+            case (false, _):
+                Button("Cancel") { connect.cancelPairing(device.id) }
+            }
+        }
+    }
+
+    private var detail: String {
+        switch (device.paired, device.pairing) {
+        case (true, _): return device.connected ? "Paired, connected" : "Paired, not reachable right now"
+        case (false, .requested): return "Waiting for the phone. Check it shows code \(device.code ?? "?")"
+        case (false, .requestedByPeer): return "Wants to pair, code \(device.code ?? "?")"
+        case (false, .none): return "Not paired"
+        }
+    }
+}
+
 private struct TweaksPane: View {
     @ObservedObject var tweaks: SystemTweaks
     var body: some View {
@@ -439,31 +520,72 @@ private struct TweaksPane: View {
 
 private struct PermissionsPane: View {
     @State private var tick = false
+    @State private var triedSystemEvents = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            PaneHeader("Permissions", "Grant these so the fixes can work.")
-            PermRow(name: "Accessibility",
-                    granted: Permissions.hasAccessibility,
-                    detail: "Scroll fix, window management, keyboard remaps.") {
+            PaneHeader("Permissions", "What each fix needs from macOS. Grant a permission only if you use the features next to it.")
+
+            Text("Core").font(.headline)
+            PermRow(name: "Accessibility", status: Permissions.hasAccessibility ? .granted : .denied,
+                    detail: "Scroll fix, window snapping and resizing, keyboard remaps, Alt-Tab, taskbar, volume keys.") {
                 Permissions.promptAccessibility()
                 Permissions.openSettings(.accessibility)
             }
-            PermRow(name: "Input Monitoring",
-                    granted: Permissions.hasInputMonitoring,
-                    detail: "Keyboard remapping and tap-to-launch.") {
+            PermRow(name: "Input Monitoring", status: Permissions.hasInputMonitoring ? .granted : .denied,
+                    detail: "Keyboard remapping and tap-a-modifier-to-launch.") {
                 Permissions.requestInputMonitoring()
                 Permissions.openSettings(.inputMonitoring)
             }
-            PermRow(name: "Screen Recording",
-                    granted: Permissions.hasScreenRecording,
-                    detail: "Screenshots and screen recording.") {
+            PermRow(name: "Screen Recording", status: Permissions.hasScreenRecording ? .granted : .denied,
+                    detail: "Screenshots, screen recording, and window thumbnails in Alt-Tab and the taskbar.") {
                 Permissions.requestScreenRecording()
                 Permissions.openSettings(.screenRecording)
             }
+
+            Text("Asked when you first use a feature").font(.headline).padding(.top, 8)
+            PermRow(name: "Automation: System Events", status: Permissions.automation("com.apple.systemevents"),
+                    detail: "Sleep, Restart and Shut Down in the Start menu; listing login items in Task Manager.") {
+                Permissions.requestAutomation(appName: "System Events")
+                Permissions.openSettings(.automation)
+            }
+            PermRow(name: "Automation: Finder", status: Permissions.automation("com.apple.finder"),
+                    detail: "Opening Finder windows from the taskbar and Start menu.") {
+                Permissions.requestAutomation(appName: "Finder")
+                Permissions.openSettings(.automation)
+            }
+            PermRow(name: "Local Network", status: Permissions.localNetwork,
+                    detail: Permissions.localNetwork == .granted
+                        ? "Phone link. Allowed: your phone has connected before."
+                        : "Phone link. macOS asks the first time it is switched on. Shows Allowed once a phone has connected.") {
+                Permissions.openSettings(.localNetwork)
+            }
+            PermRow(name: "Downloads folder", status: Permissions.downloads,
+                    detail: "Saving files received from your phone. macOS asks on the first transfer; shows Allowed once a file has been saved.") {
+                Permissions.openSettings(.filesAndFolders)
+            }
+            PermRow(name: "Login Items", status: Permissions.loginItem,
+                    detail: "Starting Mac Fixes when you log in, so the keyboard swap and taps are always on.") {
+                Permissions.openLoginItemsSettings()
+            }
+
+            Text("Status updates when you come back to this pane. Notifications are not listed: macOS refuses them for this self-signed app, so Mac Fixes shows its own banners instead.")
+                .font(.callout).foregroundStyle(.secondary)
             Button("Refresh status") { tick.toggle() }
         }
         .id(tick)
+        .onAppear {
+            // Automation status is only reported for a running app.
+            if !triedSystemEvents, Permissions.automation("com.apple.systemevents") == .unknown {
+                triedSystemEvents = true
+                Permissions.launchSystemEvents { DispatchQueue.main.async { tick.toggle() } }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            tick.toggle()
+        }
     }
+
 }
 
 private struct AboutPane: View {
@@ -496,18 +618,43 @@ private struct PaneHeader: View {
 }
 
 private struct PermRow: View {
-    let name: String; let granted: Bool; let detail: String; let action: () -> Void
+    let name: String; let status: Permissions.Status; let detail: String; let action: () -> Void
     var body: some View {
         HStack(alignment: .top) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(granted ? .green : .orange)
+            Image(systemName: icon).foregroundStyle(color).frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name).fontWeight(.medium)
+                HStack(spacing: 6) {
+                    Text(name).fontWeight(.medium)
+                    Text(label).font(.caption).foregroundStyle(.secondary)
+                }
                 Text(detail).font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
-            if !granted { Button("Grant", action: action) }
+            Button(status == .granted ? "Settings" : "Grant", action: action)
         }
         Divider()
+    }
+    private var icon: String {
+        switch status {
+        case .granted: return "checkmark.circle.fill"
+        case .denied: return "exclamationmark.triangle.fill"
+        case .notAsked: return "circle.dashed"
+        case .unknown: return "questionmark.circle"
+        }
+    }
+    private var color: Color {
+        switch status {
+        case .granted: return .green
+        case .denied: return .orange
+        case .notAsked, .unknown: return .secondary
+        }
+    }
+    private var label: String {
+        switch status {
+        case .granted: return "Allowed"
+        case .denied: return "Not allowed"
+        case .notAsked: return "Not asked yet"
+        case .unknown: return "Unknown"
+        }
     }
 }

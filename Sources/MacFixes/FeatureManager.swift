@@ -21,6 +21,7 @@ final class FeatureManager: ObservableObject {
     let monitorVolume = MonitorVolumeFeature()
     let softwareVolume = SoftwareVolumeFeature()
     let taskManager = TaskManagerFeature()
+    let connect = ConnectFeature()
 
     // MARK: Persisted feature state
 
@@ -50,6 +51,15 @@ final class FeatureManager: ObservableObject {
         didSet {
             defaults.set(clipboardEnabled, forKey: "clipboardEnabled")
             apply(clipboard, enabled: clipboardEnabled)
+        }
+    }
+
+    /// Phone link (Zorin Connect / KDE Connect). Off until the user opts in:
+    /// it listens on the local network.
+    @Published var connectEnabled: Bool {
+        didSet {
+            defaults.set(connectEnabled, forKey: "connectEnabled")
+            apply(connect, enabled: connectEnabled)
         }
     }
 
@@ -150,6 +160,7 @@ final class FeatureManager: ObservableObject {
         captureEnabled = defaults.bool(forKey: "captureEnabled")
         clipboardEnabled = defaults.bool(forKey: "clipboardEnabled")
         keyboardEnabled = defaults.bool(forKey: "keyboardEnabled")
+        connectEnabled = defaults.bool(forKey: "connectEnabled")
         windowsEnabled = defaults.bool(forKey: "windowsEnabled")
         taskbarEnabled = defaults.bool(forKey: "taskbarEnabled")
         startMenuEnabled = defaults.bool(forKey: "startMenuEnabled")
@@ -182,6 +193,7 @@ final class FeatureManager: ObservableObject {
         if altTabEnabled { _ = altTab.start() }
         if monitorVolumeEnabled { _ = monitorVolume.start() }
         if softwareVolumeEnabled { _ = softwareVolume.start() }
+        if connectEnabled { _ = connect.start() }
         if hideDock { DockControl.setHidden(true) }
         // Reapply the persistent modifier swap and start its hot-plug watcher,
         // even if the event-tap part of the keyboard feature is off.

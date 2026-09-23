@@ -1,7 +1,6 @@
 import Foundation
 import IOKit.hid
 import AppKit
-@preconcurrency import UserNotifications
 
 /// Per-keyboard modifier remapping via `hidutil`, for Windows muscle memory.
 ///
@@ -26,7 +25,7 @@ import AppKit
 /// hidutil mappings do not survive reboot, so a LaunchAgent reapplies the
 /// built-in mapping at login; the external ones are applied when the app
 /// launches (see launch at login), on wake, and on keyboard hot-plug.
-final class ModifierSwap: NSObject, ObservableObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+final class ModifierSwap: NSObject, ObservableObject, @unchecked Sendable {
     private let agentLabel = "com.filipkin.macfixes.keyswap"
     private let hidutil = "/usr/bin/hidutil"
     private let defaults = UserDefaults.standard
@@ -49,7 +48,6 @@ final class ModifierSwap: NSObject, ObservableObject, UNUserNotificationCenterDe
     private var hidManager: IOHIDManager?
     private var wakeObserver: NSObjectProtocol?
     private var pendingApply: DispatchWorkItem?
-    private var notificationsReady = false
 
     /// External keyboards this app is not remapping, for the settings pane.
     @Published private(set) var conflicts: [Conflict] = []
@@ -238,8 +236,7 @@ final class ModifierSwap: NSObject, ObservableObject, UNUserNotificationCenterDe
         removedSinceReset.remove(kb.id)
         applyMapping()
         post(title: "Nearly there: re-plug \(kb.name)",
-             body: "Its System Settings modifier map is reset. Unplug the keyboard and plug it back in (or restart) and Mac Fixes will take over the remap.",
-             category: nil, userInfo: [:])
+             body: "Its System Settings modifier map is reset. Unplug the keyboard and plug it back in (or restart) and Mac Fixes will take over the remap.")
     }
 
     // Keyboards whose System Settings map was reset but that have not been
@@ -264,60 +261,21 @@ final class ModifierSwap: NSObject, ObservableObject, UNUserNotificationCenterDe
         return Int(tv.tv_sec)
     }
 
-    // MARK: Notifications
+    // MARK: Notices (in-app banners; macOS refuses system notifications for this self-signed app)
 
-    private let conflictCategory = "kbSwapConflict"
-    private let resetAction = "reset"
     private func notifiedKey(_ id: String) -> String { "kbSwapNotified.\(id)" }
-
-    private func setupNotifications() {
-        guard !notificationsReady, Bundle.main.bundleIdentifier != nil else { return }
-        notificationsReady = true
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-        let reset = UNNotificationAction(identifier: resetAction, title: "Reset to default", options: [])
-        center.setNotificationCategories([
-            UNNotificationCategory(identifier: conflictCategory, actions: [reset], intentIdentifiers: [])
-        ])
-    }
 
     private func notifyConflictOnce(_ kb: Keyboard) {
         guard !defaults.bool(forKey: notifiedKey(kb.id)) else { return }
         defaults.set(true, forKey: notifiedKey(kb.id))
-        post(title: "\(kb.name) has its own modifier map",
-             body: "System Settings › Keyboard › Modifier Keys already remaps this keyboard, so Mac Fixes is leaving it alone (the two would cancel out). Reset it to default to let Mac Fixes take over.",
-             category: conflictCategory, userInfo: ["keyboard": kb.id])
+        let id = kb.id
+        Notifier.post(title: "\(kb.name) has its own modifier map",
+                      body: "System Settings › Keyboard › Modifier Keys already remaps this keyboard, so Mac Fixes is leaving it alone (the two would cancel out). Reset it to default to let Mac Fixes take over.",
+                      action: Notifier.Action(title: "Reset to default") { [weak self] in self?.resetSystemSettingsMap(id: id) })
     }
 
-    private func post(title: String, body: String, category: String?, userInfo: [String: String]) {
-        guard Bundle.main.bundleIdentifier != nil else { return }
-        setupNotifications()
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            content.userInfo = userInfo
-            if let category { content.categoryIdentifier = category }
-            center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
-        }
-    }
-
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                didReceive response: UNNotificationResponse,
-                                withCompletionHandler completionHandler: @escaping () -> Void) {
-        if response.actionIdentifier == resetAction,
-           let id = response.notification.request.content.userInfo["keyboard"] as? String {
-            DispatchQueue.main.async { [weak self] in self?.resetSystemSettingsMap(id: id) }
-        }
-        completionHandler()
-    }
-
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                willPresent notification: UNNotification,
-                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound])
+    private func post(title: String, body: String) {
+        Notifier.post(title: title, body: body)
     }
 
     // MARK: LaunchAgent (persist the built-in mapping across login)
@@ -354,7 +312,6 @@ final class ModifierSwap: NSObject, ObservableObject, UNUserNotificationCenterDe
     // MARK: Reapply on wake / hot-plug
 
     private func startWatching() {
-        setupNotifications()
         if wakeObserver == nil {
             wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -389,7 +346,7 @@ final class ModifierSwap: NSObject, ObservableObject, UNUserNotificationCenterDe
             awaitingReattach = set
             removedSinceReset.remove(kb.id)
             post(title: "\(kb.name) is now remapped by Mac Fixes",
-                 body: "Ctrl and Command are swapped the Windows way.", category: nil, userInfo: [:])
+                 body: "Ctrl and Command are swapped the Windows way.")
         }
         scheduleApply()
     }

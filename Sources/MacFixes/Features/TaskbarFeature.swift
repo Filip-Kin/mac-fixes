@@ -389,6 +389,10 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     func focus(_ item: TaskbarApp) {
         setPeek(nil)
         if item.bundleID == "com.apple.finder" { openFinderWindow(); return }
+        // Our own icon (shown while Settings is open). Asking macOS to activate
+        // ourselves from our own non-activating panel is ignored, so raise the
+        // window directly.
+        if item.pid == ProcessInfo.processInfo.processIdentifier { focusSelf(); return }
         // Already frontmost: minimize its window, like clicking a Windows taskbar
         // button for the active app.
         if item.isActive, let pid = item.pid {
@@ -401,6 +405,20 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         } else if let b = item.bundleID,
                   let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: b) {
             NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
+    @MainActor
+    private func focusSelf() {
+        let windows = NSApp.windows.filter { $0.styleMask.contains(.titled) && !($0 is NSPanel) }
+        if NSApp.isActive, let key = NSApp.keyWindow, windows.contains(key), !key.isMiniaturized {
+            key.miniaturize(nil)
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        for w in windows where w.isVisible || w.isMiniaturized {
+            if w.isMiniaturized { w.deminiaturize(nil) }
+            w.makeKeyAndOrderFront(nil)
         }
     }
 

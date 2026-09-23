@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settingsWindow: NSWindow?
     private var features: FeatureManager { .shared }
     private var activityToken: NSObjectProtocol?
+    private let phoneService = PhoneServiceProvider()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar only, no dock icon
@@ -30,6 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             options: [.userInitiated],
             reason: "Global input event taps must keep receiving events")
         features.bootstrap()
+        // Finder: right-click files › Services › Send to Phone.
+        NSApp.servicesProvider = phoneService
+        NSUpdateDynamicServices()
         // Right-click empty taskbar space opens Settings on the Taskbar pane.
         features.taskbar.setOpenSettingsAction { [weak self] in
             MainActor.assumeIsolated { self?.showSettings(pane: .taskbar) }
@@ -128,6 +132,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(clip)
         }
 
+        if features.connectEnabled {
+            for phone in features.connect.connectedPhones() {
+                let item = NSMenuItem(title: "Send Files to \(phone.name)…", action: #selector(sendToPhone(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = phone.id
+                item.image = NSImage(systemSymbolName: "iphone.and.arrow.forward", accessibilityDescription: nil)
+                menu.addItem(item)
+            }
+            if let transfer = features.connect.transfer {
+                let item = NSMenuItem(title: transfer, action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+            }
+        }
+
         let awake = KeepAwake.shared
         let awakeItem = NSMenuItem(title: awake.menuTitle, action: nil, keyEquivalent: "")
         awakeItem.image = NSImage(systemSymbolName: awake.isActive ? "cup.and.saucer.fill" : "cup.and.saucer", accessibilityDescription: nil)
@@ -202,6 +221,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Actions
 
+    @objc private func sendToPhone(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        features.connect.chooseAndSend(to: id)
+    }
+
     @objc private func performCapture(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,
               let action = allCaptureActions.first(where: { $0.id == id }) else { return }
@@ -223,6 +247,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openSettings() { showSettings() }
 
     /// Open Settings, optionally jumping to a specific pane.
+    // Dock icon clicked (only shown while Settings is open).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showSettings()
+        return false
+    }
+
     func showSettings(pane: SettingsPane? = nil) {
         if let pane { SettingsRouter.shared.pane = pane }
         if settingsWindow == nil {
@@ -234,8 +264,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
+            // Back to menu-bar-only when Settings closes.
+            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
+                NSApp.setActivationPolicy(.accessory)
+            }
+            // Coming back from a System Settings page we opened (a Grant
+            // button): bring Settings forward again instead of leaving it
+            // buried behind other apps.
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                guard app?.bundleIdentifier == "com.apple.systempreferences" else { return }
+                MainActor.assumeIsolated {
+                    guard let w = self?.settingsWindow, w.isVisible else { return }
+                    NSApp.activate(ignoringOtherApps: true)
+                    w.makeKeyAndOrderFront(nil)
+                }
+            }
         }
+        // While Settings is open the app gets a Dock icon and a ⌘Tab entry, so
+        // the window can always be found again. A menu-bar-only app's window
+        // otherwise drops behind everything when another app takes focus.
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+}
+
+/// The "Send to Phone" service (declared as NSServices in Info.plist).
+final class PhoneServiceProvider: NSObject {
+    @MainActor @objc(sendToPhone:userData:error:)
+    func sendToPhone(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = pboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let connect = FeatureManager.shared.connect
+        guard let phone = connect.connectedPhones().first else {
+            error.pointee = "No paired phone is connected." as NSString
+            Notifier.post(title: "No phone connected", body: "Pair a phone in Mac Fixes Settings › Phone, and make sure it is on the same Wi-Fi.")
+            return
+        }
+        connect.send(files: urls, to: phone.id)
     }
 }
