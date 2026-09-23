@@ -17,10 +17,15 @@ enum AXWindow {
     /// move within the line rather than scroll the page).
     static func focusedIsTextInput() -> Bool {
         let sys = AXUIElementCreateSystemWide()
+        // Called from the keyboard tap, which every key press waits on. A busy
+        // app can take seconds to answer (the default timeout is 6 s); give up
+        // fast and treat it as "not a text field" so Home/End pass through.
+        AXUIElementSetMessagingTimeout(sys, 0.1)
         var elRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &elRef) == .success,
               let elVal = elRef, CFGetTypeID(elVal) == AXUIElementGetTypeID() else { return false }
         let el = elVal as! AXUIElement
+        AXUIElementSetMessagingTimeout(el, 0.1)
         var roleRef: CFTypeRef?
         AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &roleRef)
         switch roleRef as? String {

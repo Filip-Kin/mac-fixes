@@ -10,6 +10,8 @@ import Carbon.HIToolbox
 /// cannot: text navigation and tap-a-modifier-to-launch.
 final class KeyboardFeature: Feature, @unchecked Sendable {
     private var tap: CFMachPort?
+    private var tapThread: Thread?
+    private var tapRunLoop: CFRunLoop?
     let modifierSwap = ModifierSwap()
 
     private let defaults = UserDefaults.standard
@@ -60,7 +62,7 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
         }
     }
 
-    // Tap-to-launch state (touched only on the tap's run loop).
+    // Tap-to-launch state (touched only on the tap thread).
     fileprivate var candidate = false
     fileprivate var sawOther = false
     fileprivate var candidateAt: TimeInterval = 0
@@ -125,40 +127,58 @@ final class KeyboardFeature: Feature, @unchecked Sendable {
     func start() -> Bool {
         modifierSwap.reapplyIfEnabled()
         reloadConfig()
-        guard tap == nil else { return true }
+        guard tapThread == nil else { return true }
 
-        let mask = CGEventMask(
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.keyUp.rawValue) |
-            (1 << CGEventType.flagsChanged.rawValue))
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
-                                          place: .headInsertEventTap,
-                                          options: .defaultTap,
-                                          eventsOfInterest: mask,
-                                          callback: keyboardCallback,
-                                          userInfo: refcon) else {
-            trace("Keyboard", "event tap creation FAILED (AX trusted: \(AXIsProcessTrusted()))")
-            Permissions.promptAccessibility()
-            return false
+        // Run the tap on its own high-priority thread. Every key press waits on
+        // this callback before reaching the focused app, so it must not queue
+        // behind main-thread UI work. Under memory pressure a stalled main run
+        // loop made macOS time the tap out and keystrokes went missing.
+        let thread = Thread { [weak self] in
+            guard let self else { return }
+            let mask = CGEventMask(
+                (1 << CGEventType.keyDown.rawValue) |
+                (1 << CGEventType.keyUp.rawValue) |
+                (1 << CGEventType.flagsChanged.rawValue))
+            let refcon = Unmanaged.passUnretained(self).toOpaque()
+            guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap,
+                                            place: .headInsertEventTap,
+                                            options: .defaultTap,
+                                            eventsOfInterest: mask,
+                                            callback: keyboardCallback,
+                                            userInfo: refcon) else {
+                trace("Keyboard", "event tap creation FAILED (AX trusted: \(AXIsProcessTrusted()))")
+                DispatchQueue.main.async { Permissions.promptAccessibility() }
+                return
+            }
+            self.tap = t
+            let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0)
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
+            CGEvent.tapEnable(tap: t, enable: true)
+            self.tapRunLoop = CFRunLoopGetCurrent()
+            // Watchdog on this same run loop: re-enable if macOS ever disables it.
+            let w = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+                guard let self, let t = self.tap else { return }
+                if !CGEvent.tapIsEnabled(tap: t) {
+                    CGEvent.tapEnable(tap: t, enable: true)
+                    traceAsync("Keyboard", "watchdog re-enabled tap")
+                }
+            }
+            RunLoop.current.add(w, forMode: .common)
+            trace("Keyboard", "event tap running on dedicated thread")
+            CFRunLoopRun()
+            trace("Keyboard", "tap run loop exited")
         }
-        trace("Keyboard", "event tap created (AX trusted: \(AXIsProcessTrusted()))")
-        self.tap = tap
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        thread.name = "com.filipkin.macfixes.keyboard"
+        thread.qualityOfService = .userInteractive
+        tapThread = thread
+        thread.start()
         return true
     }
 
     func stop() {
-        guard let tap else { return }
-        CGEvent.tapEnable(tap: tap, enable: false)
-        if let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) {
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
-        }
-        CFMachPortInvalidate(tap)
-        self.tap = nil
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap); self.tap = nil }
+        if let rl = tapRunLoop { CFRunLoopStop(rl); tapRunLoop = nil }
+        tapThread = nil
         // Note: the persistent modifier swap is intentionally NOT undone here;
         // it is only removed when the user turns that toggle off.
     }
@@ -285,6 +305,7 @@ private func keyboardCallback(proxy: CGEventTapProxy,
 
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         feature.reenable()
+        traceAsync("Keyboard", "tap disabled by \(type == .tapDisabledByTimeout ? "timeout" : "user input"), re-enabled")
         return Unmanaged.passUnretained(event)
     }
 

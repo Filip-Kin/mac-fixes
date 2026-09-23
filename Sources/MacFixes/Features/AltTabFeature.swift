@@ -56,7 +56,7 @@ final class AltTabFeature: Feature, @unchecked Sendable {
                 guard let self, let t = self.tap else { return }
                 if !CGEvent.tapIsEnabled(tap: t) {
                     CGEvent.tapEnable(tap: t, enable: true)
-                    trace("AltTab", "watchdog re-enabled tap")
+                    traceAsync("AltTab", "watchdog re-enabled tap")
                 }
             }
             RunLoop.current.add(w, forMode: .common)
@@ -95,7 +95,7 @@ final class AltTabFeature: Feature, @unchecked Sendable {
                 let f = event.flags
                 // Only log modifier+Tab (a switch attempt), not plain Tab typing.
                 if f.contains(.maskAlternate) || f.contains(.maskCommand) || f.contains(.maskControl) {
-                    trace("AltTab", "Tab down flags=0x\(String(f.rawValue, radix: 16)) alt=\(f.contains(.maskAlternate)) cmd=\(f.contains(.maskCommand)) ctrl=\(f.contains(.maskControl))")
+                    traceAsync("AltTab", "Tab down flags=0x\(String(f.rawValue, radix: 16)) alt=\(f.contains(.maskAlternate)) cmd=\(f.contains(.maskCommand)) ctrl=\(f.contains(.maskControl))")
                 }
             }
             if code == Int64(kVK_Tab), event.flags.contains(.maskAlternate) {
@@ -159,6 +159,7 @@ private func altTabCallback(proxy: CGEventTapProxy, type: CGEventType,
     let me = Unmanaged<AltTabFeature>.fromOpaque(refcon).takeUnretainedValue()
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         me.reenable()
+        traceAsync("AltTab", "tap disabled by \(type == .tapDisabledByTimeout ? "timeout" : "user input"), re-enabled")
         return Unmanaged.passUnretained(event)
     }
     if me.handle(type: type, event: event) { return nil }
