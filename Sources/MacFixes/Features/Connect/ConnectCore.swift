@@ -23,10 +23,21 @@ enum ConnectProtocol {
     static let clipboard = "kdeconnect.clipboard"
     static let clipboardConnect = "kdeconnect.clipboard.connect"
 
+    static let notification = "kdeconnect.notification"
+    static let notificationRequest = "kdeconnect.notification.request"
+    static let notificationReply = "kdeconnect.notification.reply"
+    static let notificationAction = "kdeconnect.notification.action"
+    static let mousepad = "kdeconnect.mousepad.request"
+    static let keyboardState = "kdeconnect.mousepad.keyboardstate"
+    static let battery = "kdeconnect.battery"
+    static let findMyPhone = "kdeconnect.findmyphone.request"
+
     /// What we accept and send. The phone only enables a plugin when the
     /// desktop lists the plugin's packet types here.
-    static let incoming = [share, shareUpdate, clipboard, clipboardConnect]
-    static let outgoing = [share, shareUpdate, clipboard, clipboardConnect]
+    static let incoming = [share, shareUpdate, clipboard, clipboardConnect, notification, mousepad, battery]
+    static let outgoing = [share, shareUpdate, clipboard, clipboardConnect,
+                           notificationRequest, notificationReply, notificationAction,
+                           keyboardState, findMyPhone]
 
     static func isValidDeviceId(_ s: String) -> Bool {
         s.range(of: "^[a-zA-Z0-9_-]{32,38}$", options: .regularExpression) != nil

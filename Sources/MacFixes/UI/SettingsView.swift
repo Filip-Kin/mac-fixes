@@ -454,6 +454,12 @@ private struct PhonePane: View {
                 Toggle("Share the clipboard", isOn: Binding(get: { connect.clipboardSync }, set: { connect.clipboardSync = $0 }))
                 Text("Text you copy on this Mac is sent to paired phones, and text sent from the phone lands on this Mac's clipboard. Passwords copied from password managers are never sent. Android only lets the app read its clipboard when you tap Send clipboard in the app.")
                     .font(.callout).foregroundStyle(.secondary)
+                Toggle("Show the phone's notifications", isOn: Binding(get: { connect.phoneNotifications }, set: { connect.phoneNotifications = $0 }))
+                Text("They appear as banners in the top-right corner, with the app's action buttons and a reply box for messages. Closing one with × also clears it on the phone. In Zorin Connect, allow notification access when asked.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("Let the phone control the pointer and keyboard", isOn: Binding(get: { connect.remoteInput }, set: { connect.remoteInput = $0 }))
+                Text("Zorin Connect's Remote input: drag to move, tap to click, two fingers to scroll, and type on the phone's keyboard. The phone's Ctrl acts as Command, so Ctrl+C copies.")
+                    .font(.callout).foregroundStyle(.secondary)
                 Text("Received files are saved to \(connect.downloadFolder.path). To send, use the menu bar item or right-click files in Finder and choose Services › Send to Phone.")
                     .font(.callout).foregroundStyle(.secondary)
             }
@@ -477,7 +483,10 @@ private struct PhoneRow: View {
             Spacer()
             switch (device.paired, device.pairing) {
             case (true, _):
-                if device.connected { Button("Send Files…") { connect.chooseAndSend(to: device.id) } }
+                if device.connected {
+                    Button("Send Files…") { connect.chooseAndSend(to: device.id) }
+                    Button("Ring") { connect.ringPhone(device.id) }
+                }
                 Button("Unpair", role: .destructive) { connect.unpair(device.id) }
             case (false, .none):
                 Button("Pair") { connect.requestPairing(device.id) }
@@ -489,7 +498,10 @@ private struct PhoneRow: View {
 
     private var detail: String {
         switch (device.paired, device.pairing) {
-        case (true, _): return device.connected ? "Paired, connected" : "Paired, not reachable right now"
+        case (true, _):
+            guard device.connected else { return "Paired, not reachable right now" }
+            guard let b = device.battery else { return "Paired, connected" }
+            return "Paired, connected · battery \(b)%\(device.charging ? ", charging" : "")"
         case (false, .requested): return "Waiting for the phone. Check it shows code \(device.code ?? "?")"
         case (false, .requestedByPeer): return "Wants to pair, code \(device.code ?? "?")"
         case (false, .none): return "Not paired"

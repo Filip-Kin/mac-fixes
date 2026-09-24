@@ -20,6 +20,8 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
         var connected: Bool
         var pairing: PairState
         var code: String?
+        var battery: Int?
+        var charging = false
     }
     enum PairState: Equatable { case none, requested, requestedByPeer }
 
@@ -47,12 +49,35 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
     private var ownChangeCount = -1
     private var clipboardUpdatedAt: Int64 = 0
     private let transfers = DispatchQueue(label: "com.filipkin.macfixes.connect.transfers")
+    private let notificationQueue = DispatchQueue(label: "com.filipkin.macfixes.connect.notifications")
+    private let input = ConnectInput()
+    private var batteries: [String: (charge: Int, charging: Bool)] = [:]   // guarded by lock
+    private var iconCache: [String: NSImage] = [:]                         // notificationQueue only
 
     // MARK: Settings
 
     var clipboardSync: Bool {
         get { defaults.object(forKey: "connectClipboard") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "connectClipboard"); objectWillChange.send() }
+    }
+
+    /// Show the phone's notifications as banners on this Mac.
+    var phoneNotifications: Bool {
+        get { defaults.object(forKey: "connectNotifications") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "connectNotifications"); objectWillChange.send() }
+    }
+
+    /// Let the phone move the pointer and type (Zorin Connect's Remote input).
+    var remoteInput: Bool {
+        get { defaults.object(forKey: "connectRemoteInput") as? Bool ?? true }
+        set {
+            defaults.set(newValue, forKey: "connectRemoteInput")
+            objectWillChange.send()
+            // The phone greys out its keyboard when this is off.
+            for phone in connectedPhones() {
+                pairedLink(phone.id)?.send(ConnectPacket(ConnectProtocol.keyboardState, ["state": newValue]))
+            }
+        }
     }
 
     var downloadFolder: URL {
@@ -381,15 +406,22 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
             t.name = peer.name
             t.type = peer.type
             trusted[peer.id] = t
-            sendClipboardConnect(to: link)
+            pairedSetup(link)
         }
         refreshStatus()
     }
 
+    /// Once a phone is connected and paired.
+    private func pairedSetup(_ link: ConnectLink) {
+        sendClipboardConnect(to: link)
+        link.send(ConnectPacket(ConnectProtocol.keyboardState, ["state": remoteInput]))
+    }
+
     private func linkClosed(_ link: ConnectLink) {
+        transfers.async { [weak self] in self?.finishBatch(link.peer.id, name: link.peer.name) }
         lock.lock()
         if links[link.peer.id] === link { links[link.peer.id] = nil }
-        if links[link.peer.id] == nil { pairing[link.peer.id] = nil }
+        if links[link.peer.id] == nil { pairing[link.peer.id] = nil; batteries[link.peer.id] = nil }
         lock.unlock()
         refreshStatus()
     }
@@ -412,9 +444,12 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
         }
         switch p.type {
         case ConnectProtocol.share: shareReceived(p, on: link)
-        case ConnectProtocol.shareUpdate: break
+        case ConnectProtocol.shareUpdate: shareReceived(p, on: link)
         case ConnectProtocol.clipboard: clipboardReceived(p.string("content"), timestamp: nil)
         case ConnectProtocol.clipboardConnect: clipboardReceived(p.string("content"), timestamp: p.int64("timestamp"))
+        case ConnectProtocol.notification: notificationReceived(p, on: link)
+        case ConnectProtocol.mousepad: if remoteInput { input.handle(p) }
+        case ConnectProtocol.battery: batteryReceived(p, on: link)
         default: break
         }
     }
@@ -510,7 +545,7 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
         t[link.peer.id] = Trusted(name: link.peer.name, type: link.peer.type, cert: link.peer.certDER)
         trusted = t
         trace("Connect", "paired with \(link.peer.name)")
-        sendClipboardConnect(to: link)
+        pairedSetup(link)
         refreshStatus()
         Notifier.post(title: "Paired with \(link.peer.name)", body: "You can now send files between this Mac and your phone.")
     }
@@ -552,8 +587,20 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
 
     // MARK: Receiving files, text and links
 
+    /// One incoming batch of files from a phone. Touched only on `transfers`.
+    private struct Batch {
+        var expected: Int
+        var totalBytes: Int64
+        var doneBytes: Int64 = 0
+        var files: [URL] = []
+        var failed: [String] = []
+    }
+    private var batches: [String: Batch] = [:]
+
     private func shareReceived(_ p: ConnectPacket, on link: ConnectLink) {
-        if let text = p.string("text") {
+        if p.type == ConnectProtocol.shareUpdate {
+            transfers.async { [weak self] in self?.updateBatch(link, p) }
+        } else if let text = p.string("text") {
             setPasteboard(text)
             Notifier.post(title: "Text from \(link.peer.name)", body: "Copied to the clipboard.")
         } else if let url = p.string("url"), let u = URL(string: url),
@@ -566,43 +613,91 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
         }
     }
 
+    /// transfers queue. The phone announces (and later grows) the batch size.
+    private func updateBatch(_ link: ConnectLink, _ p: ConnectPacket) {
+        let n = Int(p.int64("numberOfFiles") ?? 1)
+        let total = p.int64("totalPayloadSize") ?? 0
+        if var b = batches[link.peer.id] {
+            b.expected = max(n, b.files.count + b.failed.count)
+            b.totalBytes = max(total, b.doneBytes)
+            batches[link.peer.id] = b
+        } else {
+            batches[link.peer.id] = Batch(expected: n, totalBytes: total)
+        }
+    }
+
     private func receiveFile(_ p: ConnectPacket, from link: ConnectLink) {
+        let id = link.peer.id
+        if batches[id] == nil { updateBatch(link, p) }
         let rawName = (p.string("filename") ?? "").replacingOccurrences(of: "/", with: "_")
         let name = rawName.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).isEmpty
             ? "file-\(Int(Date().timeIntervalSince1970))" : rawName
         let dest = uniqueURL(in: downloadFolder, name: name)
         let partial = dest.appendingPathExtension("part")
         let size = p.payloadSize ?? 0
-        let total = Int(p.int64("numberOfFiles") ?? 1)
-        setTransfer("Receiving \(name) from \(link.peer.name)…")
+        let bannerId = "receive-\(id)"
 
-        var lastUpdate = Date.distantPast
-        let ok = link.receivePayload(of: p, to: partial) { [weak self] got in
-            guard Date().timeIntervalSince(lastUpdate) > 0.5, size > 0 else { return }
-            lastUpdate = Date()
-            self?.setTransfer("Receiving \(name) (\(got * 100 / size)%)")
+        func progress(_ got: Int64) {
+            guard let b = batches[id] else { return }
+            let index = b.files.count + b.failed.count + 1
+            let label = b.expected > 1 ? "\(name) (\(index) of \(b.expected))" : name
+            let fraction = b.totalBytes > 0 ? Double(b.doneBytes + got) / Double(b.totalBytes)
+                                            : (size > 0 ? Double(got) / Double(size) : 0)
+            setTransfer("Receiving \(label) \(Int(fraction * 100))%")
+            Notifier.show(Notifier.Banner(id: bannerId, title: "Receiving from \(link.peer.name)",
+                                          body: label, progress: min(max(fraction, 0), 1), timeout: nil))
         }
-        setTransfer(nil)
-        guard ok, (try? FileManager.default.moveItem(at: partial, to: dest)) != nil else {
+        progress(0)
+        var last = Date.distantPast
+        let ok = link.receivePayload(of: p, to: partial) { got in
+            guard Date().timeIntervalSince(last) > 0.25 else { return }
+            last = Date()
+            progress(got)
+        }
+        let saved = ok && (try? FileManager.default.moveItem(at: partial, to: dest)) != nil
+        if saved {
+            defaults.set(true, forKey: Permissions.downloadsKey)
+            if let ms = p.int64("lastModified"), ms > 0 {
+                try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: Double(ms) / 1000)],
+                                                       ofItemAtPath: dest.path)
+            }
+            trace("Connect", "received \(dest.lastPathComponent) (\(size) bytes)")
+        } else {
             if !FileManager.default.fileExists(atPath: partial.path) {
                 // Could not even create the file: the Downloads permission.
                 defaults.set(false, forKey: Permissions.downloadsKey)
             }
             try? FileManager.default.removeItem(at: partial)
             trace("Connect", "receiving \(name) failed")
-            Notifier.post(title: "Couldn't receive \(name)", body: "The transfer from \(link.peer.name) was interrupted.")
+        }
+
+        var b = batches[id] ?? Batch(expected: 1, totalBytes: size)
+        b.doneBytes += size
+        if saved { b.files.append(dest) } else { b.failed.append(name) }
+        batches[id] = b
+        guard b.files.count + b.failed.count >= b.expected || !saved else { return }
+        finishBatch(id, name: link.peer.name)
+    }
+
+    /// transfers queue. One banner for the whole batch.
+    private func finishBatch(_ id: String, name: String) {
+        guard let b = batches.removeValue(forKey: id) else { return }
+        setTransfer(nil)
+        let bannerId = "receive-\(id)"
+        if !b.failed.isEmpty {
+            let got = b.files.isEmpty ? "" : " \(b.files.count) arrived."
+            var banner = Notifier.Banner(id: bannerId, title: "Transfer from \(name) stopped",
+                                         body: "Couldn't receive \(b.failed.joined(separator: ", ")).\(got)", timeout: 15)
+            banner.files = b.files
+            Notifier.show(banner)
             return
         }
-        if let ms = p.int64("lastModified"), ms > 0 {
-            try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: Double(ms) / 1000)],
-                                                   ofItemAtPath: dest.path)
-        }
-        defaults.set(true, forKey: Permissions.downloadsKey)
-        trace("Connect", "received \(dest.lastPathComponent) (\(size) bytes)")
-        Notifier.post(title: "Received \(dest.lastPathComponent)",
-                      body: total > 1 ? "From \(link.peer.name), one of \(total) files."
-                                      : "From \(link.peer.name).",
-                      reveal: dest)
+        var banner = Notifier.Banner(id: bannerId,
+                                     title: b.files.count == 1 ? "Received \(b.files[0].lastPathComponent)"
+                                                               : "Received \(b.files.count) files",
+                                     body: "From \(name). Saved to Downloads.", timeout: 15)
+        banner.files = b.files
+        Notifier.show(banner)
     }
 
     private func uniqueURL(in folder: URL, name: String) -> URL {
@@ -618,13 +713,18 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
         return url
     }
 
-    // MARK: Sending files
+    // MARK: Sending files, text and links
 
     /// Paired phones that are connected right now.
     func connectedPhones() -> [(id: String, name: String)] {
         lock.lock(); let live = links; lock.unlock()
         let t = trusted
         return live.values.filter { t[$0.peer.id] != nil }.map { ($0.peer.id, $0.peer.name) }.sorted { $0.name < $1.name }
+    }
+
+    private func pairedLink(_ id: String) -> ConnectLink? {
+        lock.lock(); let link = links[id]; lock.unlock()
+        return trusted[id] != nil ? link : nil
     }
 
     func chooseAndSend(to id: String) {
@@ -638,18 +738,34 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
         send(files: panel.urls, to: id)
     }
 
+    /// The Mac's clipboard to the phone: a web link opens in the phone's
+    /// browser, anything else lands on its clipboard.
+    func sendClipboard(to id: String) {
+        guard let link = pairedLink(id) else { return }
+        guard let text = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            Notifier.post(title: "Nothing to send", body: "The clipboard has no text.")
+            return
+        }
+        let isLink = URL(string: text).map { ["http", "https"].contains($0.scheme?.lowercased() ?? "") && !text.contains(" ") } ?? false
+        link.send(ConnectPacket(ConnectProtocol.share, [isLink ? "url" : "text": text]))
+        Notifier.post(title: isLink ? "Link sent to \(link.peer.name)" : "Text sent to \(link.peer.name)",
+                      body: isLink ? "It opens in the phone's browser." : "It's on the phone's clipboard.")
+    }
+
     func send(files: [URL], to id: String) {
-        lock.lock(); let link = links[id]; lock.unlock()
-        guard let link, trusted[id] != nil else { return }
+        guard let link = pairedLink(id) else { return }
         let regular = files.filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true }
         guard !regular.isEmpty else { return }
         let sizes = regular.map { Int64((try? $0.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
         let total = sizes.reduce(0, +)
+        let bannerId = "send-\(id)"
 
         transfers.async { [weak self] in
             guard let self else { return }
             link.send(ConnectPacket(ConnectProtocol.shareUpdate, ["numberOfFiles": regular.count, "totalPayloadSize": total]))
             var sentCount = 0
+            var doneBytes: Int64 = 0
             for (i, file) in regular.enumerated() {
                 let mod = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
                 let packet = ConnectPacket(ConnectProtocol.share, [
@@ -659,24 +775,102 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
                     "totalPayloadSize": total,
                 ])
                 let label = regular.count > 1 ? "\(file.lastPathComponent) (\(i + 1) of \(regular.count))" : file.lastPathComponent
-                setTransfer("Sending \(label)…")
-                var lastUpdate = Date.distantPast
-                let size = sizes[i]
-                let ok = link.sendWithPayload(packet, file: file) { [weak self] sent in
-                    guard Date().timeIntervalSince(lastUpdate) > 0.5, size > 0 else { return }
-                    lastUpdate = Date()
-                    self?.setTransfer("Sending \(label) (\(sent * 100 / size)%)")
+                let base = doneBytes
+                func show(_ sent: Int64) {
+                    let fraction = total > 0 ? Double(base + sent) / Double(total) : 0
+                    setTransfer("Sending \(label) \(Int(fraction * 100))%")
+                    Notifier.show(Notifier.Banner(id: bannerId, title: "Sending to \(link.peer.name)",
+                                                  body: label, progress: min(fraction, 1), timeout: nil))
                 }
+                show(0)
+                var last = Date.distantPast
+                let ok = link.sendWithPayload(packet, file: file) { sent in
+                    guard Date().timeIntervalSince(last) > 0.25 else { return }
+                    last = Date()
+                    show(sent)
+                }
+                doneBytes += sizes[i]
                 if ok { sentCount += 1 } else { trace("Connect", "sending \(file.lastPathComponent) failed"); break }
             }
             setTransfer(nil)
             if sentCount == regular.count {
-                Notifier.post(title: sentCount == 1 ? "Sent \(regular[0].lastPathComponent)" : "Sent \(sentCount) files",
-                              body: "To \(link.peer.name).")
+                Notifier.show(Notifier.Banner(id: bannerId,
+                                              title: sentCount == 1 ? "Sent \(regular[0].lastPathComponent)" : "Sent \(sentCount) files",
+                                              body: "To \(link.peer.name).", timeout: 6))
             } else {
-                Notifier.post(title: "Sending stopped", body: "\(sentCount) of \(regular.count) files reached \(link.peer.name).")
+                Notifier.show(Notifier.Banner(id: bannerId, title: "Sending stopped",
+                                              body: "\(sentCount) of \(regular.count) files reached \(link.peer.name).", timeout: 15))
             }
         }
+    }
+
+    // MARK: Phone notifications
+
+    private func notificationReceived(_ p: ConnectPacket, on link: ConnectLink) {
+        guard let key = p.string("id") else { return }
+        let bannerId = "note-\(link.peer.id)-\(key)"
+        if p.bool("isCancel") { Notifier.close(bannerId); return }
+        // Silent ones are notifications that were already on the phone when it
+        // connected; showing them all at once would be a flood.
+        guard phoneNotifications, !p.bool("silent") else {
+            if p.payloadSize != nil { notificationQueue.async { _ = link.receivePayloadData(of: p) } }
+            return
+        }
+        notificationQueue.async { [weak self] in
+            guard let self else { return }
+            let hashKey = p.string("payloadHash").map { "\(link.peer.id)-\($0)" }
+            var image: NSImage?
+            if p.payloadSize != nil, let data = link.receivePayloadData(of: p), let img = NSImage(data: data) {
+                image = img
+                if let hashKey { iconCache[hashKey] = img }
+            } else if let hashKey {
+                image = iconCache[hashKey]
+            }
+            let app = p.string("appName") ?? link.peer.name
+            let title = p.string("title").flatMap { $0.isEmpty ? nil : $0 }
+            let text = p.string("text") ?? p.string("ticker") ?? ""
+            var banner = Notifier.Banner(id: bannerId, title: title ?? app,
+                                         body: title == nil ? text : "\(text)", image: image, timeout: 8)
+            banner.caption = "\(app) · \(link.peer.name)"
+            for action in p.stringList("actions").prefix(3) {
+                banner.actions.append(Notifier.Action(title: action) {
+                    link.send(ConnectPacket(ConnectProtocol.notificationAction, ["key": key, "action": action]))
+                })
+            }
+            if let replyId = p.string("requestReplyId") {
+                banner.reply = Notifier.Reply(placeholder: "Reply") { message in
+                    link.send(ConnectPacket(ConnectProtocol.notificationReply, ["requestReplyId": replyId, "message": message]))
+                }
+            }
+            if p.bool("isClearable") {
+                // The × also clears it on the phone.
+                banner.onDismiss = {
+                    link.send(ConnectPacket(ConnectProtocol.notificationRequest, ["cancel": key]))
+                }
+            }
+            Notifier.show(banner)
+        }
+    }
+
+    // MARK: Battery and ring
+
+    private func batteryReceived(_ p: ConnectPacket, on link: ConnectLink) {
+        guard let charge = p.int64("currentCharge"), (0...100).contains(charge) else { return }
+        lock.lock(); batteries[link.peer.id] = (Int(charge), p.bool("isCharging")); lock.unlock()
+        if p.int64("thresholdEvent") == 1 {
+            Notifier.post(title: "\(link.peer.name) battery low", body: "\(charge)% left.")
+        }
+        publish()
+    }
+
+    func battery(of id: String) -> (charge: Int, charging: Bool)? {
+        lock.lock(); defer { lock.unlock() }; return batteries[id]
+    }
+
+    /// Makes the phone ring at full volume until it is found.
+    func ringPhone(_ id: String) {
+        guard let link = pairedLink(id) else { return }
+        link.send(ConnectPacket(ConnectProtocol.findMyPhone))
     }
 
     // MARK: Clipboard sync
@@ -764,6 +958,7 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
         lock.lock()
         let live = links
         let states = pairing
+        let power = batteries
         lock.unlock()
         let t = trusted
         var rows: [String: DeviceRow] = [:]
@@ -775,7 +970,8 @@ final class ConnectFeature: NSObject, Feature, ObservableObject, @unchecked Send
             let state = states[id]?.state ?? PairState.none
             rows[id] = DeviceRow(id: id, name: link.peer.name, type: link.peer.type, paired: t[id] != nil,
                                  connected: true, pairing: state,
-                                 code: state == .none ? nil : verificationCode(id))
+                                 code: state == .none ? nil : verificationCode(id),
+                                 battery: power[id]?.charge, charging: power[id]?.charging ?? false)
         }
         let sorted = rows.values.sorted { ($0.paired ? 0 : 1, $0.name) < ($1.paired ? 0 : 1, $1.name) }
         DispatchQueue.main.async { [weak self] in self?.devices = sorted }

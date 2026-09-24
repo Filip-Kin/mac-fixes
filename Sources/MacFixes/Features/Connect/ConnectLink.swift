@@ -86,6 +86,24 @@ final class ConnectLink: @unchecked Sendable {
         return got == size
     }
 
+    /// Small payloads (notification icons) straight into memory.
+    func receivePayloadData(of packet: ConnectPacket, limit: Int64 = 2 * 1024 * 1024) -> Data? {
+        guard let size = packet.payloadSize, size > 0, size <= limit, let port = packet.payloadPort,
+              let p16 = UInt16(exactly: port), let fd = ConnectSocket.connect(ip, p16) else { return nil }
+        ConnectSocket.setTimeout(fd, 10)
+        guard let session = ConnectTLS(fd: fd, server: false, identity: identity.identity) else {
+            Darwin.close(fd); return nil
+        }
+        defer { session.close() }
+        guard session.peerCertDER == peer.certDER else { return nil }
+        var data = Data()
+        while Int64(data.count) < size {
+            guard let chunk = session.read(max: Int(size) - data.count), !chunk.isEmpty else { return nil }
+            data.append(chunk)
+        }
+        return data
+    }
+
     /// Send `packet` with `file` as its payload: listen on a payload port,
     /// announce it, wait for the phone to connect, act as TLS server.
     func sendWithPayload(_ packet: ConnectPacket, file: URL, progress: ((Int64) -> Void)? = nil) -> Bool {

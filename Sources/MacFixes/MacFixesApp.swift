@@ -133,14 +133,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         if features.connectEnabled {
-            for phone in features.connect.connectedPhones() {
-                let item = NSMenuItem(title: "Send Files to \(phone.name)…", action: #selector(sendToPhone(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = phone.id
-                item.image = NSImage(systemSymbolName: "iphone.and.arrow.forward", accessibilityDescription: nil)
-                menu.addItem(item)
+            let connect = features.connect
+            for phone in connect.connectedPhones() {
+                var title = phone.name
+                if let b = connect.battery(of: phone.id) {
+                    let bolt = b.charging ? " ⚡︎" : ""
+                    title += " · \(b.charge)%" + bolt
+                }
+                let top = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                top.image = NSImage(systemSymbolName: "iphone", accessibilityDescription: nil)
+                let sub = NSMenu()
+                sub.addItem(phoneItem("Send Files…", "doc.badge.arrow.up", #selector(sendToPhone(_:)), phone.id))
+                sub.addItem(phoneItem("Send Clipboard", "doc.on.clipboard", #selector(sendClipboardToPhone(_:)), phone.id))
+                sub.addItem(phoneItem("Ring Phone", "bell.and.waves.left.and.right", #selector(ringPhone(_:)), phone.id))
+                top.submenu = sub
+                menu.addItem(top)
             }
-            if let transfer = features.connect.transfer {
+            if let transfer = connect.transfer {
                 let item = NSMenuItem(title: transfer, action: nil, keyEquivalent: "")
                 item.isEnabled = false
                 menu.addItem(item)
@@ -224,6 +233,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func sendToPhone(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         features.connect.chooseAndSend(to: id)
+    }
+
+    private func phoneItem(_ title: String, _ symbol: String, _ action: Selector, _ id: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.representedObject = id
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        return item
+    }
+
+    @objc private func sendClipboardToPhone(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        features.connect.sendClipboard(to: id)
+    }
+
+    @objc private func ringPhone(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        features.connect.ringPhone(id)
     }
 
     @objc private func performCapture(_ sender: NSMenuItem) {

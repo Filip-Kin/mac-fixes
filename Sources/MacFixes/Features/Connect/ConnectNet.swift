@@ -14,6 +14,13 @@ enum ConnectSocket {
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
+        // Notice a phone that vanished (left Wi-Fi, died) within ~30 s instead
+        // of macOS's default two hours: probe after 10 s idle, every 5 s, give
+        // up after 4 unanswered probes.
+        var idle: Int32 = 10, interval: Int32 = 5, count: Int32 = 4
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, socklen_t(MemoryLayout<Int32>.size))
     }
 
     /// Receive timeout in seconds; 0 clears it.
