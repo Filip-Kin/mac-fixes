@@ -12,6 +12,14 @@ import ApplicationServices
 /// transient-zero reading would wrongly kill unrelated apps, so we require the
 /// count to stay at zero for several consecutive seconds, skip hidden apps, pause
 /// around Space changes, and re-check immediately before terminating.
+///
+/// Two further guards, after VS Code was quit while the user watched a
+/// fullscreen video on another Space (its AX window list read empty for as long
+/// as they stayed there, well past the Space-change pause):
+/// - only the frontmost app can be quit: closing the last window happens in
+///   the app you are using, never in one sitting in the background;
+/// - the window server's list, which covers every Space, must also show no
+///   normal windows for the app.
 final class WindowObservers: @unchecked Sendable {
     fileprivate var closeQuits = false
     private var timer: Timer?
@@ -63,15 +71,24 @@ final class WindowObservers: @unchecked Sendable {
             if count < 0 { zeroStreak[pid] = 0; continue }        // AX read failed — leave it alone
             if count > 0 { hadWindows[pid] = true; zeroStreak[pid] = 0; continue }
 
-            // count == 0. Only a candidate if it previously had windows and is not
-            // merely hidden (a hidden app still owns its windows).
-            guard hadWindows[pid] == true, !app.isHidden else { zeroStreak[pid] = 0; continue }
+            // count == 0. Only a candidate if it previously had windows, is not
+            // merely hidden (a hidden app still owns its windows), and is the app
+            // the user is in.
+            guard hadWindows[pid] == true, !app.isHidden,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+                zeroStreak[pid] = 0; continue
+            }
             zeroStreak[pid, default: 0] += 1
             if zeroStreak[pid, default: 0] >= zeroThreshold {
                 // Final immediate re-check to dodge a lingering transient.
-                if windowCount(pid) == 0, !app.isHidden {
+                let serverWindows = windowServerCount(pid)
+                if windowCount(pid) == 0, !app.isHidden, serverWindows == 0,
+                   NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+                    trace("CloseQuits", "quitting \(app.localizedName ?? "?") (\(app.bundleIdentifier ?? "?")): no windows for \(zeroThreshold)s")
                     app.terminate()
                     hadWindows[pid] = false
+                } else if serverWindows > 0 {
+                    trace("CloseQuits", "kept \(app.localizedName ?? "?"): AX reads no windows but the window server has \(serverWindows)")
                 }
                 zeroStreak[pid] = 0
             }
@@ -93,6 +110,20 @@ final class WindowObservers: @unchecked Sendable {
 
     private func regularApps() -> [NSRunningApplication] {
         NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+    }
+
+    /// Normal (layer 0), reasonably sized windows the window server knows for
+    /// this app on any Space, on screen or not.
+    private func windowServerCount(_ pid: pid_t) -> Int {
+        guard let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return 1   // cannot tell: treat as "has windows" and keep the app
+        }
+        return list.filter { w in
+            guard (w[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                  (w[kCGWindowLayer as String] as? Int) == 0,
+                  let b = w[kCGWindowBounds as String] as? [String: CGFloat] else { return false }
+            return (b["Width"] ?? 0) >= 100 && (b["Height"] ?? 0) >= 100
+        }.count
     }
 
     /// Number of standard windows, or -1 if the Accessibility read failed.
