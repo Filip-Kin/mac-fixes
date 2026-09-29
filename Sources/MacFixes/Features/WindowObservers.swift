@@ -1,33 +1,30 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 
-/// Close-quits: when a regular app's last window closes, quit it (Windows-like).
+/// Close-quits: when you close an app's last window, quit it (Windows-like).
 ///
-/// Implemented by polling each app's window count rather than AX destroy
-/// notifications, which many apps (TextEdit and other document apps) never emit.
+/// Driven by the close gesture, not by watching window counts. Earlier versions
+/// polled every app and quit any whose window list read empty for a few
+/// seconds. That list also reads empty during fullscreen on another Space, Space
+/// switches, Teams-style fake fullscreen and heavy load, so apps the user was
+/// not touching (VS Code, Teams) got quit and lost work. Patching each case
+/// left the next one open.
 ///
-/// Guarded heavily against false positives: an app's AX window list can briefly
-/// read empty during Space switches, fullscreen transitions (including apps like
-/// Teams that fake fullscreen), app launches and heavy load. Quitting on a single
-/// transient-zero reading would wrongly kill unrelated apps, so we require the
-/// count to stay at zero for several consecutive seconds, skip hidden apps, pause
-/// around Space changes, and re-check immediately before terminating.
-///
-/// Two further guards, after VS Code was quit while the user watched a
-/// fullscreen video on another Space (its AX window list read empty for as long
-/// as they stayed there, well past the Space-change pause):
-/// - only the frontmost app can be quit: closing the last window happens in
-///   the app you are using, never in one sitting in the background;
-/// - the window server's list, which covers every Space, must also show no
-///   normal windows for the app.
+/// Now an app can only be quit in the couple of seconds after the user closes
+/// one of *its* windows: a click on a window's red close button, or ⌘W while
+/// it is frontmost. Only then do we check that no windows remain, both in the
+/// Accessibility list and in the window server's list across all Spaces. No
+/// close gesture, no quit, whatever the window lists say.
 final class WindowObservers: @unchecked Sendable {
     fileprivate var closeQuits = false
+    private var monitors: [Any] = []
+    private var closeObserver: NSObjectProtocol?
+
+    /// Apps whose window the user just closed, and until when we watch them.
+    private var armed: [pid_t: Date] = [:]
     private var timer: Timer?
-    private var hadWindows: [pid_t: Bool] = [:]     // has this app shown ≥1 window while observed
-    private var zeroStreak: [pid_t: Int] = [:]      // consecutive polls reading zero windows
-    private var pauseUntil = Date.distantPast
-    private var spaceObserver: NSObjectProtocol?
-    private let zeroThreshold = 3                    // ~3 s of no windows before quitting
+    private let armFor: TimeInterval = 2.0
 
     func configure(closeQuits: Bool) {
         self.closeQuits = closeQuits
@@ -35,81 +32,109 @@ final class WindowObservers: @unchecked Sendable {
     }
 
     func stop() {
+        monitors.forEach { NSEvent.removeMonitor($0) }
+        monitors.removeAll()
+        if let o = closeObserver { NotificationCenter.default.removeObserver(o); closeObserver = nil }
         timer?.invalidate()
         timer = nil
-        hadWindows.removeAll()
-        zeroStreak.removeAll()
-        if let o = spaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(o)
-            spaceObserver = nil
-        }
+        armed.removeAll()
     }
 
     private func start() {
+        guard monitors.isEmpty else { return }
+        // Global monitors only see other apps' events, which is what we want.
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] _ in
+            self?.mouseDown(at: NSEvent.mouseLocation)
+        }) { monitors.append(m) }
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] e in
+            self?.keyDown(e)
+        }) { monitors.append(m) }
+        // Closes done by Mac Fixes itself (the taskbar popup's ✕).
+        closeObserver = NotificationCenter.default.addObserver(forName: .userClosedWindow, object: nil, queue: .main) { [weak self] note in
+            if let pid = note.userInfo?["pid"] as? pid_t { self?.arm(pid) }
+        }
+    }
+
+    // MARK: Close gestures
+
+    private func mouseDown(at cocoaPoint: NSPoint) {
+        // AX uses top-left-origin screen coordinates.
+        guard let primary = NSScreen.screens.first else { return }
+        let x = Float(cocoaPoint.x), y = Float(primary.frame.maxY - cocoaPoint.y)
+        let sys = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(sys, 0.2)
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(sys, x, y, &hit) == .success, let el = hit else {
+            extendIfArmed(NSWorkspace.shared.frontmostApplication?.processIdentifier)
+            return
+        }
+        var pid: pid_t = 0
+        AXUIElementGetPid(el, &pid)
+        var sub: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &sub)
+        if (sub as? String) == kAXCloseButtonSubrole {
+            arm(pid)
+        } else {
+            // Clicking inside an app that is about to quit (e.g. "Don't Save"
+            // in its save sheet) keeps the watch going.
+            extendIfArmed(pid)
+        }
+    }
+
+    private func keyDown(_ e: NSEvent) {
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let mods = e.modifierFlags.intersection([.command, .shift, .option, .control])
+        if Int(e.keyCode) == kVK_ANSI_W, mods == .command || mods == [.command, .shift], let pid {
+            arm(pid)
+        } else {
+            extendIfArmed(pid)   // e.g. Return on a save sheet
+        }
+    }
+
+    private func arm(_ pid: pid_t) {
+        guard closeQuits, eligible(pid) else { return }
+        armed[pid] = Date().addingTimeInterval(armFor)
+        startTimer()
+    }
+
+    private func extendIfArmed(_ pid: pid_t?) {
+        guard let pid, armed[pid] != nil else { return }
+        armed[pid] = Date().addingTimeInterval(armFor)
+    }
+
+    private func eligible(_ pid: pid_t) -> Bool {
+        guard pid != ProcessInfo.processInfo.processIdentifier,
+              let app = NSRunningApplication(processIdentifier: pid),
+              app.activationPolicy == .regular,
+              app.bundleIdentifier != "com.apple.finder" else { return false }
+        return true
+    }
+
+    // MARK: After a close
+
+    /// Polls only while something is armed; idle otherwise.
+    private func startTimer() {
         guard timer == nil else { return }
-        reseed()   // seed baselines so apps that already have no windows aren't quit
-        // A Space switch — including an app entering (or faking) fullscreen — can
-        // make other apps' AX window lists momentarily read empty. Pause quitting
-        // for a few seconds around it and re-baseline.
-        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            self.pauseUntil = Date().addingTimeInterval(3)
-            self.reseed()
-        }
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.poll() }
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.check() }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
-    private func poll() {
-        guard closeQuits, Date() >= pauseUntil else { return }
-        let selfPid = ProcessInfo.processInfo.processIdentifier
-        for app in regularApps() {
-            let pid = app.processIdentifier
-            if pid == selfPid || app.bundleIdentifier == "com.apple.finder" { continue }
-
-            let count = windowCount(pid)
-            if count < 0 { zeroStreak[pid] = 0; continue }        // AX read failed — leave it alone
-            if count > 0 { hadWindows[pid] = true; zeroStreak[pid] = 0; continue }
-
-            // count == 0. Only a candidate if it previously had windows, is not
-            // merely hidden (a hidden app still owns its windows), and is the app
-            // the user is in.
-            guard hadWindows[pid] == true, !app.isHidden,
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-                zeroStreak[pid] = 0; continue
+    private func check() {
+        let now = Date()
+        for (pid, until) in armed {
+            guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+                armed[pid] = nil; continue
             }
-            zeroStreak[pid, default: 0] += 1
-            if zeroStreak[pid, default: 0] >= zeroThreshold {
-                // Final immediate re-check to dodge a lingering transient.
-                let serverWindows = windowServerCount(pid)
-                if windowCount(pid) == 0, !app.isHidden, serverWindows == 0,
-                   NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-                    trace("CloseQuits", "quitting \(app.localizedName ?? "?") (\(app.bundleIdentifier ?? "?")): no windows for \(zeroThreshold)s")
-                    app.terminate()
-                    hadWindows[pid] = false
-                } else if serverWindows > 0 {
-                    trace("CloseQuits", "kept \(app.localizedName ?? "?"): AX reads no windows but the window server has \(serverWindows)")
-                }
-                zeroStreak[pid] = 0
+            if windowCount(pid) == 0, !app.isHidden, windowServerCount(pid) == 0 {
+                trace("CloseQuits", "quitting \(app.localizedName ?? "?") (\(app.bundleIdentifier ?? "?")): its last window was just closed")
+                app.terminate()
+                armed[pid] = nil
+            } else if now > until {
+                armed[pid] = nil   // a window remains: it was not the last one
             }
         }
-        // Forget apps that have quit.
-        hadWindows = hadWindows.filter { NSRunningApplication(processIdentifier: $0.key) != nil }
-        zeroStreak = zeroStreak.filter { NSRunningApplication(processIdentifier: $0.key) != nil }
-    }
-
-    /// Re-establish the baseline: any app that currently has windows is remembered
-    /// as having had them, and streaks are cleared.
-    private func reseed() {
-        for app in regularApps() {
-            let pid = app.processIdentifier
-            if windowCount(pid) > 0 { hadWindows[pid] = true }
-            zeroStreak[pid] = 0
-        }
-    }
-
-    private func regularApps() -> [NSRunningApplication] {
-        NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        if armed.isEmpty { timer?.invalidate(); timer = nil }
     }
 
     /// Normal (layer 0), reasonably sized windows the window server knows for
@@ -129,6 +154,7 @@ final class WindowObservers: @unchecked Sendable {
     /// Number of standard windows, or -1 if the Accessibility read failed.
     private func windowCount(_ pid: pid_t) -> Int {
         let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.5)
         var wins: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &wins) == .success,
               let arr = wins as? [AXUIElement] else { return -1 }

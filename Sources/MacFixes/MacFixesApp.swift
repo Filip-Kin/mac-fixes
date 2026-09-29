@@ -61,6 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Restore any OS settings we changed (e.g. the title-bar double-click
         // action) so quitting doesn't leave the system altered.
         features.windows.stop()
+        // Put the speakers back at the level being heard; otherwise they stay
+        // at the 100% software volume set them to.
+        if features.softwareVolumeEnabled { features.softwareVolume.stop() }
     }
 
     private func updateStatusIcon() {

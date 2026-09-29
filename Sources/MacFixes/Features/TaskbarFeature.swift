@@ -71,6 +71,9 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
             model.onClockClick = { [weak self] in
                 MainActor.assumeIsolated { self?.toggleCalendar() }
             }
+            model.pointerInPeekZone = { [weak self] in
+                MainActor.assumeIsolated { self?.pointerInPeekZone() ?? false }
+            }
             placePanels()
             return true
         }
@@ -134,6 +137,18 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
         TaskbarLayout.reservedDisplays = Set(targets.map { $0.displayID })
     }
 
+    /// The popup, plus the strip below it down to the screen edge (the gap
+    /// and the taskbar icons under it), so moving from the icon to the popup
+    /// never closes it.
+    @MainActor
+    private func pointerInPeekZone() -> Bool {
+        guard let p = peekPanel, p.isVisible else { return false }
+        let f = p.frame
+        let screenBottom = NSScreen.screens.first(where: { $0.frame.intersects(f) })?.frame.minY ?? 0
+        let zone = NSRect(x: f.minX - 8, y: screenBottom, width: f.width + 16, height: f.maxY - screenBottom)
+        return zone.contains(NSEvent.mouseLocation)
+    }
+
     @MainActor
     private func updatePeek(_ state: TaskbarModel.Peek?) {
         guard let peekPanel else { return }
@@ -182,6 +197,8 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     @Published private(set) var peek: Peek?
     var onLayoutChange: (() -> Void)?
     var onPeekChange: ((Peek?) -> Void)?
+    /// Set by the feature: whether the pointer is over the popup or the path to it.
+    var pointerInPeekZone: (() -> Bool)?
     var onStartButton: (() -> Void)?
     var onOpenSettings: (() -> Void)?
     var onClockClick: (() -> Void)?
@@ -500,15 +517,52 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
+    /// Hover-exit events alone are unreliable here (a slow move across the gap
+    /// outlasts the delay, and the bar re-rendering on any app launch or
+    /// activation fires a spurious exit), which closed the popup at random.
+    /// So closing only happens once the pointer has really left the popup and
+    /// the strip below it; until then keep checking.
     @MainActor
     func hoverExit() {
         showWork?.cancel()
+        scheduleClose(after: 0.3)
+    }
+
+    @MainActor
+    private func scheduleClose(after delay: TimeInterval) {
         closeWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.setPeek(nil) }
+            MainActor.assumeIsolated {
+                guard let self, self.peek != nil else { return }
+                if self.pointerInPeekZone?() == true { self.scheduleClose(after: 0.15) }
+                else { self.setPeek(nil) }
+            }
         }
         closeWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// The ✕ on a popup card: close that window as if its red button was
+    /// clicked, then refresh the popup with what is left.
+    @MainActor
+    func closeWindow(_ win: TaskbarWindow) {
+        guard let peek else { return }
+        var btn: CFTypeRef?
+        if AXUIElementCopyAttributeValue(win.element, kAXCloseButtonAttribute as CFString, &btn) == .success,
+           let b = btn, CFGetTypeID(b) == AXUIElementGetTypeID() {
+            // Tell close-quits a window was closed on purpose (it cannot see
+            // clicks inside Mac Fixes' own panels).
+            NotificationCenter.default.post(name: .userClosedWindow, object: nil,
+                                            userInfo: ["pid": win.pid])
+            AXUIElementPerformAction(b as! AXUIElement, kAXPressAction as CFString)
+        }
+        let pid = peek.pid, x = peek.anchorX
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.peek?.pid == pid else { return }
+                self.showPeek(pid: pid, anchorX: x)
+            }
+        }
     }
 
     @MainActor
@@ -806,7 +860,8 @@ private struct PeekView: View {
     var body: some View {
         HStack(spacing: 8) {
             ForEach(model.peek?.windows ?? []) { win in
-                PeekCard(title: win.title, image: model.thumbnails[win.windowID]) { model.raise(win) }
+                PeekCard(title: win.title, image: model.thumbnails[win.windowID],
+                         onClick: { model.raise(win) }, onClose: { model.closeWindow(win) })
             }
         }
         .padding(10)
@@ -820,6 +875,7 @@ private struct PeekCard: View {
     let title: String
     let image: NSImage?
     let onClick: () -> Void
+    let onClose: () -> Void
     @State private var hovering = false
 
     var body: some View {
@@ -841,6 +897,20 @@ private struct PeekCard: View {
             }
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(Color.red.opacity(0.85)))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .help("Close window")
+            .padding(4)
+            .opacity(hovering ? 1 : 0)
+            .allowsHitTesting(hovering)
+        }
         .onHover { hovering = $0 }
     }
 }
@@ -990,4 +1060,9 @@ private extension NSPanel {
         hasShadow = true
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
     }
+}
+
+extension Notification.Name {
+    /// Mac Fixes closed a window on the user's behalf (userInfo "pid").
+    static let userClosedWindow = Notification.Name("com.filipkin.macfixes.userClosedWindow")
 }

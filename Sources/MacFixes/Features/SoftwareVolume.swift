@@ -48,17 +48,32 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         // never loud). The device stays at 100% because the volume keys are now
         // swallowed and drive software gain instead.
         forceCurrentDeviceToFull()
-        volume = min(1, max(0, savedDeviceVolume ?? 1.0))
+        volume = Self.startingVolume(device: savedDeviceVolume)
         gain = Self.gain(for: volume)
+        trace("SoftwareVolume", "starting at \(Int(volume * 100))% (device was \(savedDeviceVolume.map { "\(Int($0 * 100))%" } ?? "unknown"))")
         // Rebuild the tap onto the new device when the default output changes,
         // otherwise audio keeps routing to the old device until toggled.
         installDefaultDeviceListener()
         return true
     }
 
+    /// Where the software slider starts. The device reading at 100% almost
+    /// always means we left it there (the app quit or was killed without
+    /// restoring it), not that the user wants full blast: use the level they
+    /// last chose instead, or a quiet default. Any other device level is a real
+    /// choice (first run, or changed while Mac Fixes was off), so carry it over.
+    private static let savedLevelKey = "softwareVolumeLevel"
+    static func startingVolume(device: Float?) -> Float {
+        if let d = device, d < 0.99 { return min(1, max(0, d)) }
+        if let saved = UserDefaults.standard.object(forKey: savedLevelKey) as? Float { return min(1, max(0, saved)) }
+        return 0.25
+    }
+
     func stop() {
         removeDefaultDeviceListener()
-        if savedDeviceID != 0, let v = savedDeviceVolume { Self.setDeviceVolume(savedDeviceID, v) }
+        // Hand the device the level the user is actually hearing, so turning
+        // this off (or quitting) causes no jump, and the next start reads it.
+        if savedDeviceID != 0 { Self.setDeviceVolume(savedDeviceID, muted ? 0 : volume) }
         savedDeviceVolume = nil; savedDeviceID = 0
         teardownAudio()
         if let t = keyTap {
@@ -87,8 +102,8 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         let newUID = Self.defaultOutputUID()
         guard newUID != currentOutputUID else { return }
         trace("SoftwareVolume", "default output changed -> \(newUID ?? "nil"); rebuilding tap")
-        // Restore the device we're leaving, then take the new one to 100%.
-        if savedDeviceID != 0, let v = savedDeviceVolume { Self.setDeviceVolume(savedDeviceID, v) }
+        // Leave the old device at the level being heard, then take the new one to 100%.
+        if savedDeviceID != 0 { Self.setDeviceVolume(savedDeviceID, muted ? 0 : volume) }
         savedDeviceVolume = nil; savedDeviceID = 0
         teardownAudio()
         if setupTap() {
@@ -333,6 +348,7 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         muted = false
         volume = min(1, max(0, v))
         gain = Self.gain(for: volume)
+        UserDefaults.standard.set(volume, forKey: Self.savedLevelKey)
         feedback(bop: bop)
     }
 
