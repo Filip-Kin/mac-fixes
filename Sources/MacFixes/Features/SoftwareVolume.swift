@@ -57,22 +57,15 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         return true
     }
 
-    /// Where the software slider starts. The device reading at 100% almost
-    /// always means we left it there (the app quit or was killed without
-    /// restoring it), not that the user wants full blast: use the level they
-    /// last chose instead, or a quiet default. Any other device level is a real
-    /// choice (first run, or changed while Mac Fixes was off), so carry it over.
+    /// Where the software slider starts: the level the user last chose (saved
+    /// on every change). The device reading is only used on the very first
+    /// run; after that it is either our own 100% or our rounded hand-off on
+    /// quit, never a better guess than the saved level.
     private static let savedLevelKey = "softwareVolumeLevel"
-    /// A reading within 0.1 of the saved level is our own hand-off on quit,
-    /// rounded by the device (built-in speakers only take fixed steps, so 50%
-    /// reads back as ~43%): keep the exact saved level so restarts don't drift.
     static func startingVolume(device: Float?) -> Float {
-        let saved = (UserDefaults.standard.object(forKey: savedLevelKey) as? Float).map { min(1, max(0, $0)) }
-        if let d = device, d < 0.99 {
-            if let saved, abs(d - saved) <= 0.1 { return saved }
-            return min(1, max(0, d))
-        }
-        return saved ?? 0.25
+        if let saved = UserDefaults.standard.object(forKey: savedLevelKey) as? Float { return min(1, max(0, saved)) }
+        if let d = device, d < 0.99 { return d }
+        return 0.25
     }
 
     func stop() {
