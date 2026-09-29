@@ -63,10 +63,16 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
     /// last chose instead, or a quiet default. Any other device level is a real
     /// choice (first run, or changed while Mac Fixes was off), so carry it over.
     private static let savedLevelKey = "softwareVolumeLevel"
+    /// A reading within 0.1 of the saved level is our own hand-off on quit,
+    /// rounded by the device (built-in speakers only take fixed steps, so 50%
+    /// reads back as ~43%): keep the exact saved level so restarts don't drift.
     static func startingVolume(device: Float?) -> Float {
-        if let d = device, d < 0.99 { return min(1, max(0, d)) }
-        if let saved = UserDefaults.standard.object(forKey: savedLevelKey) as? Float { return min(1, max(0, saved)) }
-        return 0.25
+        let saved = (UserDefaults.standard.object(forKey: savedLevelKey) as? Float).map { min(1, max(0, $0)) }
+        if let d = device, d < 0.99 {
+            if let saved, abs(d - saved) <= 0.1 { return saved }
+            return min(1, max(0, d))
+        }
+        return saved ?? 0.25
     }
 
     func stop() {
