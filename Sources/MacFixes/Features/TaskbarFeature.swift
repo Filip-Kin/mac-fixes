@@ -453,7 +453,10 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         let appEl = AXUIElementCreateApplication(pid)
         var winsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &winsRef) == .success,
-              let arr = winsRef as? [AXUIElement], !arr.isEmpty else { return }
+              let arr = winsRef as? [AXUIElement], !arr.isEmpty else {
+            reopen(pid: pid)
+            return
+        }
         for w in arr {
             var m: CFTypeRef?
             AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &m)
@@ -463,6 +466,16 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
             AXUIElementSetAttributeValue(first, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
             AXUIElementPerformAction(first, kAXRaiseAction as CFString)
         }
+    }
+
+    /// Running but with its window closed (Teams, Slack, Mail…): activating
+    /// alone shows nothing. Opening the app again sends the same "reopen"
+    /// request a Dock click does, which makes it bring its main window back.
+    private func reopen(pid: pid_t) {
+        guard let url = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config)
     }
 
     private func openFinderWindow() {
