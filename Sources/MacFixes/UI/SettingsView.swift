@@ -359,7 +359,7 @@ private struct TaskbarPane: View {
         VStack(alignment: .leading, spacing: 16) {
             PaneHeader("Taskbar", "A Windows-style bar along the bottom of the screen showing open apps.")
             Toggle("Enable taskbar", isOn: $features.taskbarEnabled)
-            Text("Click an icon to switch; right-click to Pin, open a New Window, or Quit; hover an app with several windows to pick one; drag pinned icons to reorder. Pinned apps stay on the bar even when closed and launch on click. The active app is highlighted, and Apple’s auto-launched Tips app is hidden. To use it as your only taskbar, set the macOS Dock to auto-hide in System Settings › Desktop & Dock.")
+            Text("Click an icon to switch, or click the active app again to minimise it; right-click to Pin, open a New Window, or Quit; hover an app to preview its windows, pick one, or close one with ✕; drag pinned icons to reorder. Pinned apps stay on the bar even when closed and launch on click. The active app is highlighted, and Apple’s auto-launched Tips app is hidden. To use it as your only taskbar, set the macOS Dock to auto-hide in System Settings › Desktop & Dock.")
                 .font(.callout).foregroundStyle(.secondary)
 
             Toggle("Show on every monitor", isOn: $features.taskbarAllScreens)

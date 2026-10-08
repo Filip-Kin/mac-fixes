@@ -413,7 +413,16 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         // Already frontmost: minimize its window, like clicking a Windows taskbar
         // button for the active app.
         if item.isActive, let pid = item.pid {
-            minimizeFocusedWindow(pid: pid)
+            if minimizeFocusedWindow(pid: pid) {
+                // macOS leaves the app active with nothing on screen, so the
+                // taskbar kept it highlighted and the next click did nothing.
+                // Move focus to the window underneath, like Windows.
+                focusNextApp(excluding: pid)
+            } else {
+                // Highlighted but nothing visible: bring a window back.
+                NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+                unminimizeIfAllHidden(pid: pid)
+            }
             return
         }
         if let pid = item.pid {
@@ -439,13 +448,41 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func minimizeFocusedWindow(pid: pid_t) {
+    /// Window each app last had minimised from the taskbar, restored first.
+    private var lastMinimized: [pid_t: AXUIElement] = [:]
+
+    /// Minimises the app's focused window; false if it had no visible one.
+    @discardableResult
+    private func minimizeFocusedWindow(pid: pid_t) -> Bool {
         let appEl = AXUIElementCreateApplication(pid)
         var winRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
-           let w = winRef, CFGetTypeID(w) == AXUIElementGetTypeID() {
-            AXUIElementSetAttributeValue(w as! AXUIElement, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+        guard AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+              let w = winRef, CFGetTypeID(w) == AXUIElementGetTypeID() else { return false }
+        let win = w as! AXUIElement
+        var m: CFTypeRef?
+        AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &m)
+        if (m as? Bool) == true { return false }
+        AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+        lastMinimized[pid] = win
+        return true
+    }
+
+    /// Activate the app owning the frontmost normal window that isn't `pid`'s
+    /// (Finder if there is none, i.e. the desktop).
+    private func focusNextApp(excluding pid: pid_t) {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        for w in list {   // front to back
+            guard let owner = w[kCGWindowOwnerPID as String] as? pid_t, owner != pid, owner != me,
+                  (w[kCGWindowLayer as String] as? Int) == 0,
+                  let b = w[kCGWindowBounds as String] as? [String: CGFloat],
+                  (b["Width"] ?? 0) >= 100, (b["Height"] ?? 0) >= 100,
+                  let app = NSRunningApplication(processIdentifier: owner),
+                  app.activationPolicy == .regular else { continue }
+            app.activate(options: [])
+            return
         }
+        NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first?.activate(options: [])
     }
 
     /// If clicking an app that has only minimized windows, restore one.
@@ -462,9 +499,11 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
             AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &m)
             if (m as? Bool) == false { return }         // a visible window exists
         }
-        if let first = arr.first {
-            AXUIElementSetAttributeValue(first, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-            AXUIElementPerformAction(first, kAXRaiseAction as CFString)
+        // Prefer the window the taskbar minimised; fall back to the first.
+        let last = lastMinimized.removeValue(forKey: pid).flatMap { l in arr.first { CFEqual($0, l) } }
+        if let target = last ?? arr.first {
+            AXUIElementSetAttributeValue(target, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            AXUIElementPerformAction(target, kAXRaiseAction as CFString)
         }
     }
 
@@ -588,7 +627,7 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
             TaskbarWindow(id: i, title: e.title, element: e.element, pid: pid,
                           windowID: matchWindowID(e.element, in: cgList))
         }
-        guard wins.count > 1 else { setPeek(nil); return }
+        guard !wins.isEmpty else { setPeek(nil); return }
         // Seed from cache so re-hovering shows thumbnails instantly; refresh below.
         var seeded: [CGWindowID: NSImage] = [:]
         for w in wins where w.windowID != 0 { if let img = thumbCache[w.windowID] { seeded[w.windowID] = img } }
