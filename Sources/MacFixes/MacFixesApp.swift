@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var features: FeatureManager { .shared }
     private var activityToken: NSObjectProtocol?
     private let phoneService = PhoneServiceProvider()
+    private var termSource: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar only, no dock icon
@@ -31,6 +32,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             options: [.userInitiated],
             reason: "Global input event taps must keep receiving events")
         features.bootstrap()
+        // A plain `kill`/`pkill` (SIGTERM) would otherwise exit without
+        // applicationWillTerminate, leaving the speakers at 100% and skipping
+        // the volume save. Route it through a normal quit instead.
+        signal(SIGTERM, SIG_IGN)
+        let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        term.setEventHandler { NSApp.terminate(nil) }
+        term.resume()
+        termSource = term
         // Finder: right-click files › Services › Send to Phone.
         NSApp.servicesProvider = phoneService
         NSUpdateDynamicServices()

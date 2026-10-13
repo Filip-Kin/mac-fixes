@@ -50,7 +50,8 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         forceCurrentDeviceToFull()
         volume = Self.startingVolume(device: savedDeviceVolume)
         gain = Self.gain(for: volume)
-        trace("SoftwareVolume", "starting at \(Int(volume * 100))% (device was \(savedDeviceVolume.map { "\(Int($0 * 100))%" } ?? "unknown"))")
+        muted = UserDefaults.standard.bool(forKey: Self.savedMutedKey)
+        trace("SoftwareVolume", "starting at \(Int(volume * 100))%\(muted ? " (muted)" : "") (device was \(savedDeviceVolume.map { "\(Int($0 * 100))%" } ?? "unknown"))")
         // Rebuild the tap onto the new device when the default output changes,
         // otherwise audio keeps routing to the old device until toggled.
         installDefaultDeviceListener()
@@ -62,14 +63,20 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
     /// run; after that it is either our own 100% or our rounded hand-off on
     /// quit, never a better guess than the saved level.
     private static let savedLevelKey = "softwareVolumeLevel"
+    private static let savedMutedKey = "softwareVolumeMuted"
     static func startingVolume(device: Float?) -> Float {
-        if let saved = UserDefaults.standard.object(forKey: savedLevelKey) as? Float { return min(1, max(0, saved)) }
+        // Read through NSNumber: a bridged `as? Float` cast fails silently for
+        // any stored value that is not exactly representable as a Float.
+        let stored = UserDefaults.standard.object(forKey: savedLevelKey)
+        trace("SoftwareVolume", "saved level read: \(stored.map { "\($0)" } ?? "none")")
+        if let saved = (stored as? NSNumber)?.floatValue { return min(1, max(0, saved)) }
         if let d = device, d < 0.99 { return d }
         return 0.25
     }
 
     func stop() {
         removeDefaultDeviceListener()
+        if keyTap != nil { saveLevel() }
         // Hand the device the level the user is actually hearing, so turning
         // this off (or quitting) causes no jump, and the next start reads it.
         if savedDeviceID != 0 { Self.setDeviceVolume(savedDeviceID, muted ? 0 : volume) }
@@ -321,7 +328,7 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
                 switch keyCode {
                 case soundUp:   setVolume(volume + step, bop: true)
                 case soundDown: setVolume(volume - step, bop: true)
-                case mute:      muted.toggle(); feedback(bop: false)
+                case mute:      muted.toggle(); saveLevel(); feedback(bop: false)
                 default:        break
                 }
             }
@@ -352,8 +359,14 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         muted = false
         volume = min(1, max(0, v))
         gain = Self.gain(for: volume)
-        UserDefaults.standard.set(volume, forKey: Self.savedLevelKey)
+        saveLevel()
         feedback(bop: bop)
+    }
+
+    private func saveLevel() {
+        UserDefaults.standard.set(Double(volume), forKey: Self.savedLevelKey)
+        UserDefaults.standard.set(muted, forKey: Self.savedMutedKey)
+        traceAsync("SoftwareVolume", "saved level \(Int((volume * 100).rounded()))%\(muted ? " (muted)" : "")")
     }
 
     @MainActor
