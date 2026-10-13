@@ -47,7 +47,12 @@ final class CaptureFeature: Feature, @unchecked Sendable {
     private lazy var shutter: NSSound? =
         NSSound(contentsOfFile: "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Screen Capture.aif",
                 byReference: true) ?? NSSound(named: "Grab")
-    private func playShutter() { shutter?.stop(); shutter?.play() }
+    @MainActor private func playShutter() {
+        guard let s = shutter else { return }
+        s.stop()
+        s.volume = FeatureManager.shared.softwareVolume.ownSoundVolume ?? 1
+        s.play()
+    }
     private let overlay = RecordingOverlay()
     private var hotKeyIDs: [UInt32] = []
     private let d = UserDefaults.standard
@@ -184,7 +189,7 @@ final class CaptureFeature: Feature, @unchecked Sendable {
         return out
     }
 
-    private func saveCGImage(_ cg: CGImage, to url: URL) {
+    @MainActor private func saveCGImage(_ cg: CGImage, to url: URL) {
         let rep = NSBitmapImageRep(cgImage: cg)
         guard let png = rep.representation(using: .png, properties: [:]) else { return }
         do {

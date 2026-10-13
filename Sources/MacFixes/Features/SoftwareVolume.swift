@@ -340,6 +340,11 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
     var currentVolume: Float { volume }
     var isMuted: Bool { muted }
 
+    /// Volume for sounds Mac Fixes plays itself. Our own audio is excluded from
+    /// the tap (see setupTap), so it reaches the device at 100% unless scaled
+    /// by hand. nil when software volume is off and the device level applies.
+    var ownSoundVolume: Float? { keyTap == nil ? nil : (muted ? 0 : gain) }
+
     @MainActor func setVolumeFromMenu(_ v: Float) { setVolume(v, bop: false) }
 
     @MainActor
