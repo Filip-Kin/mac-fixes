@@ -14,6 +14,7 @@ import ApplicationServices
 ///    triggered rather than whatever is on screen when the selection is released.
 final class AreaSelector: @unchecked Sendable {
     private var windows: [NSWindow] = []
+    private var previousApp: NSRunningApplication?
     private var rectCompletion: ((CGRect?) -> Void)?
     private var imageCompletion: ((CGImage?) -> Void)?
     private var escMonitor: Any?
@@ -94,6 +95,8 @@ final class AreaSelector: @unchecked Sendable {
 
     @MainActor
     private func activateAndArmEscape() {
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApp = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
         NSApp.activate(ignoringOtherApps: true)
         NSCursor.crosshair.set()
         let cursor = NSEvent.mouseLocation
@@ -113,6 +116,12 @@ final class AreaSelector: @unchecked Sendable {
             if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
             for w in windows { w.orderOut(nil) }
             windows = []
+            // Hand focus back to the app that was in front and drop the
+            // crosshair. Otherwise Mac Fixes stays active with no window, and
+            // the next click only re-activates that app (and resets the cursor).
+            NSCursor.arrow.set()
+            if NSApp.isActive { previousApp?.activate(options: []) }
+            previousApp = nil
         }
         return !already
     }
