@@ -182,11 +182,17 @@ struct TaskbarApp: Identifiable, Equatable {
     let pid: pid_t?         // nil when pinned but not running
     let isPinned: Bool
     var isActive: Bool
+    var windowCount = 0
+    /// The windows' CGWindowIDs in the popup's order (0 where unknown).
+    var windowIDs: [CGWindowID] = []
+    /// Index (in the popup's order) of the app's focused window.
+    var focusedWindow: Int?
     var isRunning: Bool { pid != nil }
 
     static func == (a: TaskbarApp, b: TaskbarApp) -> Bool {
         a.id == b.id && a.isActive == b.isActive && a.isPinned == b.isPinned
             && a.isRunning == b.isRunning && a.name == b.name
+            && a.windowCount == b.windowCount && a.focusedWindow == b.focusedWindow
     }
 }
 
@@ -232,6 +238,11 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     private var showWork: DispatchWorkItem?
     private var closeWork: DispatchWorkItem?
     private var rightClickMonitor: Any?
+    private var inputMonitors: [Any] = []
+    private var refreshWork: DispatchWorkItem?
+    /// A window we just raised, trusted over the app's own (possibly stale)
+    /// focus report until `until`.
+    private var pendingFocus: (pid: pid_t, windowID: CGWindowID, until: Date)?
 
     private let hidden: Set<String> = ["com.apple.tips"]
 
@@ -251,9 +262,32 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         ]
         observers = names.map { name in
             wc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.rebuild() }
+                MainActor.assumeIsolated {
+                    self?.rebuild()
+                    // A launching app opens its first window a moment later.
+                    if name == NSWorkspace.didLaunchApplicationNotification { self?.scheduleRefresh(after: 1.0) }
+                }
             }
         }
+        // Windows open, close and change focus without any app-level
+        // notification, but nearly always right after a click or key press,
+        // so refresh the window dots shortly after input instead of polling.
+        let mask: NSEvent.EventTypeMask = [.leftMouseUp, .keyUp]
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleRefresh() }
+        }) { inputMonitors.append(m) }
+        // Alt-Tab and the popup cards announce the window they raise; move the
+        // dash right away instead of waiting for the app to report focus.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .windowRaised, object: nil, queue: nil) { [weak self] note in
+                guard let pid = note.userInfo?["pid"] as? pid_t,
+                      let wid = note.userInfo?["windowID"] as? CGWindowID else { return }
+                MainActor.assumeIsolated { self?.markRaised(pid: pid, windowID: wid) }
+        })
+        if let m = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] e in
+            MainActor.assumeIsolated { self?.scheduleRefresh() }
+            return e
+        }) { inputMonitors.append(m) }
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -275,8 +309,34 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         for o in observers { wc.removeObserver(o); NotificationCenter.default.removeObserver(o) }
         observers = []
         if let m = rightClickMonitor { NSEvent.removeMonitor(m); rightClickMonitor = nil }
+        inputMonitors.forEach { NSEvent.removeMonitor($0) }
+        inputMonitors = []
+        refreshWork?.cancel()
         apps = []
         setPeek(nil)
+    }
+
+    @MainActor
+    private func markRaised(pid: pid_t, windowID: CGWindowID) {
+        pendingFocus = windowID == 0 ? nil : (pid, windowID, Date().addingTimeInterval(0.6))
+        apps = apps.map { a in
+            var a = a
+            a.isActive = a.pid == pid
+            if a.pid == pid, windowID != 0, let i = a.windowIDs.firstIndex(of: windowID) { a.focusedWindow = i }
+            return a
+        }
+        // Confirm once the app has caught up (a quicker read can still see the
+        // old focus and flick the dash back).
+        scheduleRefresh(after: 0.6)
+    }
+
+    /// Debounced rebuild: typing or clicking in bursts refreshes once after.
+    @MainActor
+    private func scheduleRefresh(after delay: TimeInterval = 0.3) {
+        refreshWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.rebuild() } }
+        refreshWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     @MainActor
@@ -325,13 +385,22 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     private func make(_ app: NSRunningApplication, pinned: Bool, frontPID: pid_t?) -> TaskbarApp {
         let b = app.bundleIdentifier
         let isFinder = b == "com.apple.finder"
-        return TaskbarApp(id: b ?? "pid:\(app.processIdentifier)",
+        let wins = AXWindow.orderedWindows(pid: app.processIdentifier)
+        var item = TaskbarApp(id: b ?? "pid:\(app.processIdentifier)",
                           bundleID: b,
                           name: isFinder ? "File Explorer" : (app.localizedName ?? "App"),
                           icon: app.icon,
                           pid: app.processIdentifier,
                           isPinned: pinned,
                           isActive: app.processIdentifier == frontPID)
+        item.windowCount = wins.windows.count
+        item.windowIDs = wins.windows.map(\.id)
+        item.focusedWindow = wins.focused
+        if let p = pendingFocus, p.pid == app.processIdentifier, Date() < p.until,
+           let i = item.windowIDs.firstIndex(of: p.windowID) {
+            item.focusedWindow = i
+        }
+        return item
     }
 
     /// A pinned app that is not running, resolved from its bundle id.
@@ -623,9 +692,10 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     @MainActor
     private func showPeek(pid: pid_t, anchorX: CGFloat) {
         let cgList = AXWindow.onScreenWindowIDs(pid: pid)
-        let wins = AXWindow.windowList(pid: pid).enumerated().map { (i, e) -> TaskbarWindow in
+        // Same order as the taskbar dots (oldest first), so dot N is card N.
+        let wins = AXWindow.orderedWindows(pid: pid).windows.enumerated().map { (i, e) -> TaskbarWindow in
             TaskbarWindow(id: i, title: e.title, element: e.element, pid: pid,
-                          windowID: matchWindowID(e.element, in: cgList))
+                          windowID: e.id != 0 ? e.id : matchWindowID(e.element, in: cgList))
         }
         guard !wins.isEmpty else { setPeek(nil); return }
         // Seed from cache so re-hovering shows thumbnails instantly; refresh below.
@@ -862,11 +932,7 @@ private struct TaskbarButton: View {
         Button(action: onClick) {
             VStack(spacing: 2) {
                 icon
-                // Running indicator: wide/bright when frontmost, a small line when
-                // open in the background, nothing for a pinned-but-closed app.
-                Capsule()
-                    .fill(Color.primary.opacity(app.isActive ? 0.9 : (app.isRunning ? 0.4 : 0)))
-                    .frame(width: app.isActive ? 16 : 5, height: 3)
+                indicator
             }
             .padding(.horizontal, 4).padding(.vertical, 3)
             .opacity(app.isRunning ? 1 : 0.5)      // dim a pinned, closed app
@@ -892,6 +958,29 @@ private struct TaskbarButton: View {
         }
     }
 
+    /// One dot per open window, in the popup's order; the focused window of the
+    /// frontmost app is a bright dash. A running app with no windows gets one
+    /// faint dot, a pinned-but-closed app nothing.
+    private static let maxDots = 5
+
+    @ViewBuilder private var indicator: some View {
+        let count = min(app.windowCount, Self.maxDots)
+        let focused = app.isActive ? app.focusedWindow.map { min($0, Self.maxDots - 1) } : nil
+        HStack(spacing: 3) {
+            if count == 0 {
+                Capsule().fill(Color.primary.opacity(app.isRunning ? 0.4 : 0)).frame(width: 5, height: 3)
+            } else {
+                ForEach(0..<count, id: \.self) { i in
+                    Capsule()
+                        .fill(Color.primary.opacity(i == focused ? 0.9 : 0.45))
+                        .frame(width: i == focused ? 12 : 4, height: 3)
+                }
+            }
+        }
+        .frame(height: 3)
+        .animation(.easeOut(duration: 0.15), value: focused)
+    }
+
     @ViewBuilder private var icon: some View {
         if app.bundleID == "com.apple.finder" {
             Image(systemName: "folder.fill")
@@ -909,10 +998,19 @@ private struct TaskbarButton: View {
 private struct PeekView: View {
     @ObservedObject var model: TaskbarModel
 
+    /// The card matching the taskbar's focus dash: the focused window of the
+    /// frontmost app (card order is dot order).
+    private var focusedIndex: Int? {
+        guard let pid = model.peek?.pid,
+              let app = model.apps.first(where: { $0.pid == pid }), app.isActive else { return nil }
+        return app.focusedWindow
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             ForEach(model.peek?.windows ?? []) { win in
                 PeekCard(title: win.title, image: model.thumbnails[win.windowID],
+                         isFocused: win.id == focusedIndex,
                          onClick: { model.raise(win) }, onClose: { model.closeWindow(win) })
             }
         }
@@ -926,6 +1024,7 @@ private struct PeekView: View {
 private struct PeekCard: View {
     let title: String
     let image: NSImage?
+    let isFocused: Bool
     let onClick: () -> Void
     let onClose: () -> Void
     @State private var hovering = false
@@ -944,8 +1043,9 @@ private struct PeekCard: View {
                 .frame(width: 150, height: 94)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.primary.opacity(hovering ? 0.5 : 0.12)))
-                Text(title).font(.caption).lineLimit(1).truncationMode(.middle).frame(width: 150)
+                    .stroke(isFocused ? Color.accentColor : Color.primary.opacity(hovering ? 0.5 : 0.12),
+                            lineWidth: isFocused ? 2 : 1))
+                Text(title).font(.caption).lineLimit(1).truncationMode(.tail).frame(width: 150)
             }
         }
         .buttonStyle(.plain)
@@ -1117,4 +1217,6 @@ private extension NSPanel {
 extension Notification.Name {
     /// Mac Fixes closed a window on the user's behalf (userInfo "pid").
     static let userClosedWindow = Notification.Name("com.filipkin.macfixes.userClosedWindow")
+    /// Mac Fixes raised a window (userInfo "pid", "windowID").
+    static let windowRaised = Notification.Name("com.filipkin.macfixes.windowRaised")
 }

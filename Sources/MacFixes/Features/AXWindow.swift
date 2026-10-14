@@ -90,8 +90,9 @@ enum AXWindow {
 
     /// An app's standard windows as (element, title), in AX front-to-back order.
     /// Skips sheets, popovers and other non-standard windows.
-    static func windowList(pid: pid_t) -> [(element: AXUIElement, title: String)] {
+    static func windowList(pid: pid_t, timeout: Float? = nil) -> [(element: AXUIElement, title: String)] {
         let app = AXUIElementCreateApplication(pid)
+        if let timeout { AXUIElementSetMessagingTimeout(app, timeout) }
         var winsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &winsRef) == .success,
               let arr = winsRef as? [AXUIElement] else { return [] }
@@ -106,6 +107,37 @@ enum AXWindow {
             out.append((w, raw.isEmpty ? "Untitled" : raw))
         }
         return out
+    }
+
+    /// An app's standard windows in a stable order: oldest first (by CGWindowID,
+    /// which the window server hands out in increasing order). The raw AX list
+    /// is front-to-back, so it reshuffles on every focus change. Also returns
+    /// the index of the app's focused window, if it is one of them.
+    static func orderedWindows(pid: pid_t) -> (windows: [(element: AXUIElement, title: String, id: CGWindowID)], focused: Int?) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.3)   // a hung app must not stall the taskbar
+        let wins = windowList(pid: pid, timeout: 0.3).map { e -> (element: AXUIElement, title: String, id: CGWindowID) in
+            var wid: CGWindowID = 0
+            _ = _AXUIElementGetWindow(e.element, &wid)
+            return (e.element, e.title, wid)
+        }
+        // Unknown ids (0) go last, keeping their AX order.
+        let ordered = wins.enumerated().sorted { a, b in
+            let ka = a.element.id == 0 ? CGWindowID.max : a.element.id
+            let kb = b.element.id == 0 ? CGWindowID.max : b.element.id
+            return ka != kb ? ka < kb : a.offset < b.offset
+        }.map(\.element)
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focusedRef) == .success,
+              let f = focusedRef, CFGetTypeID(f) == AXUIElementGetTypeID() else { return (ordered, nil) }
+        let focusedEl = f as! AXUIElement
+        return (ordered, ordered.firstIndex { CFEqual($0.element, focusedEl) })
+    }
+
+    /// A window element's CGWindowID, or 0 if unknown.
+    static func windowID(of window: AXUIElement) -> CGWindowID {
+        var wid: CGWindowID = 0
+        return _AXUIElementGetWindow(window, &wid) == .success ? wid : 0
     }
 
     /// On-screen window ids and frames for an app, for matching AX windows to a
@@ -200,6 +232,10 @@ enum AXWindow {
 
     /// Bring one specific window to the front (and its app with it).
     static func raise(_ window: AXUIElement, pid: pid_t) {
+        // Tell the taskbar first, so its focus dash moves before the app
+        // has even finished activating.
+        NotificationCenter.default.post(name: .windowRaised, object: nil,
+                                        userInfo: ["pid": pid, "windowID": windowID(of: window)])
         NSRunningApplication(processIdentifier: pid)?.activate(options: [])
         AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
