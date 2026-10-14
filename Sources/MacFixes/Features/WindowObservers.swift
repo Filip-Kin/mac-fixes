@@ -2,6 +2,11 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 
+@_silgen_name("CGSMainConnectionID") private func CGSMainConnectionID() -> Int32
+@_silgen_name("CGSCopySpacesForWindows")
+private func CGSCopySpacesForWindows(_ cid: Int32, _ mask: Int32, _ wids: CFArray) -> Unmanaged<CFArray>?
+@_silgen_name("CGSCopyManagedDisplaySpaces") private func CGSCopyManagedDisplaySpaces(_ cid: Int32) -> Unmanaged<CFArray>?
+
 /// Close-quits: when you close an app's last window, quit it (Windows-like).
 ///
 /// Driven by the close gesture, not by watching window counts. Earlier versions
@@ -131,24 +136,48 @@ final class WindowObservers: @unchecked Sendable {
                 app.terminate()
                 armed[pid] = nil
             } else if now > until {
+                trace("CloseQuits", "keeping \(app.localizedName ?? "?"): ax=\(windowCount(pid)) ws=\(windowServerCount(pid)) hidden=\(app.isHidden)")
                 armed[pid] = nil   // a window remains: it was not the last one
             }
         }
         if armed.isEmpty { timer?.invalidate(); timer = nil }
     }
 
-    /// Normal (layer 0), reasonably sized windows the window server knows for
-    /// this app on any Space, on screen or not.
+    /// Normal (layer 0), reasonably sized windows this app still has open:
+    /// on screen now, or on a Space that is not currently shown (fullscreen or
+    /// another desktop). Closed windows the app keeps around ordered out sit on
+    /// no Space (Safari, TextEdit) or on the current Space but off screen
+    /// (Teams); counting those meant close-quits never quit anything.
     private func windowServerCount(_ pid: pid_t) -> Int {
         guard let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return 1   // cannot tell: treat as "has windows" and keep the app
         }
+        let shown = currentSpaces()
         return list.filter { w in
             guard (w[kCGWindowOwnerPID as String] as? pid_t) == pid,
                   (w[kCGWindowLayer as String] as? Int) == 0,
                   let b = w[kCGWindowBounds as String] as? [String: CGFloat] else { return false }
-            return (b["Width"] ?? 0) >= 100 && (b["Height"] ?? 0) >= 100
+            guard (b["Width"] ?? 0) >= 100 && (b["Height"] ?? 0) >= 100 else { return false }
+            if (w[kCGWindowIsOnscreen as String] as? Bool) == true { return true }
+            // Unknown counts as open, so a failed lookup keeps the app.
+            guard let spaces = spaces(of: w[kCGWindowNumber as String] as? UInt32) else { return true }
+            guard let shown else { return !spaces.isEmpty }
+            return !spaces.subtracting(shown).isEmpty
         }.count
+    }
+
+    private func spaces(of wid: UInt32?) -> Set<Int>? {
+        guard let wid,
+              let ids = CGSCopySpacesForWindows(CGSMainConnectionID(), 7, [NSNumber(value: wid)] as CFArray)?
+                .takeRetainedValue() as? [NSNumber] else { return nil }
+        return Set(ids.map(\.intValue))
+    }
+
+    /// The Space currently shown on each display, or nil if unknown.
+    private func currentSpaces() -> Set<Int>? {
+        guard let displays = CGSCopyManagedDisplaySpaces(CGSMainConnectionID())?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        let ids = displays.compactMap { (($0["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? NSNumber)?.intValue }
+        return ids.isEmpty ? nil : Set(ids)
     }
 
     /// Number of standard windows, or -1 if the Accessibility read failed.
