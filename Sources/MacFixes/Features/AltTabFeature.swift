@@ -13,7 +13,10 @@ final class AltTabFeature: Feature, @unchecked Sendable {
     private var tap: CFMachPort?
     private var panel: AltTabPanel?
     private let model = AltTabModel()
-    private var shown = false                 // written on main, read on tap thread (Bool, atomic enough)
+    private var shown = false                 // main only
+    // Tap thread only. Set on Option+Tab, before the overlay is built: building
+    // can take a second, and an Option release in that gap must still commit.
+    private var armed = false
     private var tapThread: Thread?
     private var tapRunLoop: CFRunLoop?
 
@@ -85,7 +88,9 @@ final class AltTabFeature: Feature, @unchecked Sendable {
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Bool {
         switch type {
         case .flagsChanged:
-            if shown, !event.flags.contains(.maskAlternate) {
+            if armed, !event.flags.contains(.maskAlternate) {
+                armed = false
+                // Queued behind any pending onTab, so the overlay exists by then.
                 DispatchQueue.main.async { MainActor.assumeIsolated { self.commit() } }
             }
             return false
@@ -100,16 +105,18 @@ final class AltTabFeature: Feature, @unchecked Sendable {
             }
             if code == Int64(kVK_Tab), event.flags.contains(.maskAlternate) {
                 let shift = event.flags.contains(.maskShift)
+                armed = true
                 DispatchQueue.main.async { MainActor.assumeIsolated { self.onTab(shift: shift) } }
                 return true
             }
-            if code == Int64(kVK_Escape), shown {
+            if code == Int64(kVK_Escape), armed {
+                armed = false
                 DispatchQueue.main.async { MainActor.assumeIsolated { self.cancel() } }
                 return true
             }
             return false
         case .keyUp:
-            if shown, event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_Tab) { return true }
+            if armed, event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_Tab) { return true }
             return false
         default:
             return false
