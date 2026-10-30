@@ -216,15 +216,31 @@ final class ClipboardFeature: Feature, ObservableObject, @unchecked Sendable {
         }
 
         panel.close()
-        // Give the previous app a moment to be key again, then send ⌘V.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            let src = CGEventSource(stateID: .combinedSessionState)
-            let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
-            let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
-            down?.flags = .maskCommand
-            up?.flags = .maskCommand
-            down?.post(tap: .cghidEventTap)
-            up?.post(tap: .cghidEventTap)
+        panel.restoreFocus()
+        // Give the previous window a moment to be key again, then send ⌘V.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            // Press the app's own Edit > Paste: synthetic ⌘V keystrokes are being
+            // dropped on macOS 26. Fall back to the keystroke for apps with no menu.
+            let front = NSWorkspace.shared.frontmostApplication
+            let viaMenu = front.map { AXWindow.pressMenuItem(pid: $0.processIdentifier, titled: ["Paste"]) } ?? false
+            trace("Clipboard", "paste \(item.kind.rawValue) into \(front?.bundleIdentifier ?? "nil") viaMenu=\(viaMenu)"
+                  + " clipboardSet=\(self.pasteboard.changeCount == self.ownChangeCount)")
+            if viaMenu { return }
+            // A whole chord (⌘ down, V down/up, ⌘ up) at the session tap. A lone V
+            // with a Command flag at the HID tap gets dropped since macOS 26.6,
+            // which re-derives HID-stage key events from the real key state.
+            let src = CGEventSource(stateID: .hidSystemState)
+            let keys: [(CGKeyCode, Bool, CGEventFlags)] = [
+                (CGKeyCode(kVK_Command), true, .maskCommand),
+                (CGKeyCode(kVK_ANSI_V), true, .maskCommand),
+                (CGKeyCode(kVK_ANSI_V), false, .maskCommand),
+                (CGKeyCode(kVK_Command), false, []),
+            ]
+            for (code, down, flags) in keys {
+                let e = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: down)
+                e?.flags = flags
+                e?.post(tap: .cgSessionEventTap)
+            }
         }
     }
 

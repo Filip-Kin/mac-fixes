@@ -12,6 +12,7 @@ final class ClipboardPanel {
     private var panel: NSPanel?
     private var keyMonitor: Any?
     private var resignObserver: NSObjectProtocol?
+    private var previousWindow: (element: AXUIElement, pid: pid_t)?
     private let size = NSSize(width: 460, height: 500)
 
     init(feature: ClipboardFeature) { self.feature = feature }
@@ -29,6 +30,15 @@ final class ClipboardPanel {
         let vf = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let origin = NSPoint(x: vf.midX - size.width / 2, y: vf.midY - size.height / 2 + vf.height * 0.08)
         p.setFrame(NSRect(origin: origin, size: size), display: false)
+        // Remember the window being typed in: the panel takes key focus for its
+        // search field, and macOS does not hand it back when the panel closes.
+        previousWindow = nil
+        if let w = AXWindow.focusedWindow() {
+            var pid: pid_t = 0
+            if AXUIElementGetPid(w, &pid) == .success, pid != ProcessInfo.processInfo.processIdentifier {
+                previousWindow = (w, pid)
+            }
+        }
         p.makeKeyAndOrderFront(nil)
         model.focusSearch += 1
 
@@ -45,6 +55,13 @@ final class ClipboardPanel {
                 MainActor.assumeIsolated { self?.close() }
             }
         }
+    }
+
+    /// Give key focus back to the window that was focused when the panel opened.
+    func restoreFocus() {
+        guard let w = previousWindow else { return }
+        previousWindow = nil
+        AXWindow.raise(w.element, pid: w.pid)
     }
 
     func close() {
