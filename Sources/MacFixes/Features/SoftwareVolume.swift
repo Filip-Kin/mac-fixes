@@ -24,6 +24,11 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
     private var savedDeviceID: AudioObjectID = 0
     private var currentOutputUID: String?      // device the tap is currently built on
     private var defaultDeviceListener: AudioObjectPropertyListenerBlock?
+    // Host time of the last non-silent tapped buffer, written on the audio
+    // thread. Lets a key press notice a tap that has gone stale (still running,
+    // but hearing nothing while other apps play straight to the device).
+    fileprivate var lastSignalHostTime: UInt64 = 0
+    private var tapStartHostTime: UInt64 = 0
 
     /// Perceptual taper: slider position -> linear gain over a ~60 dB range, so
     /// each step down is an equal-sounding drop instead of a tiny linear one.
@@ -201,13 +206,15 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
             let g = self.muted ? 0 : self.gain
             let ins = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInput))
             let outs = UnsafeMutableAudioBufferListPointer(outOutput)
+            var heard = false
             for i in 0..<min(ins.count, outs.count) {
                 let ib = ins[i], ob = outs[i]
                 guard let ip = ib.mData?.assumingMemoryBound(to: Float.self),
                       let op = ob.mData?.assumingMemoryBound(to: Float.self) else { continue }
                 let n = Int(min(ib.mDataByteSize, ob.mDataByteSize)) / MemoryLayout<Float>.size
-                for s in 0..<n { op[s] = ip[s] * g }
+                for s in 0..<n { op[s] = ip[s] * g; if ip[s] != 0 { heard = true } }
             }
+            if heard { self.lastSignalHostTime = mach_absolute_time() }
         }
         guard ps == noErr, let proc else {
             trace("SoftwareVolume", "create IOProc failed: \(ps)")
@@ -220,8 +227,60 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
             return false
         }
         currentOutputUID = outUID
+        tapStartHostTime = mach_absolute_time()
+        lastSignalHostTime = 0
         trace("SoftwareVolume", "tap running on \(outUID)")
         return true
+    }
+
+    /// Rebuild the tap if it has heard nothing for a few seconds while
+    /// another app is playing. A stale tap no longer mutes that app, so it plays
+    /// at the device's forced 100% and the volume keys appear to do nothing.
+    @MainActor
+    private func healStaleTap() {
+        guard #available(macOS 14.2, *), aggID != 0 else { return }
+        let since = max(lastSignalHostTime, tapStartHostTime)
+        guard Self.seconds(since: since) > 5, let pid = Self.otherProcessPlaying() else { return }
+        trace("SoftwareVolume", "tap silent \(Int(Self.seconds(since: since)))s while pid \(pid) plays; rebuilding")
+        let deviceID = savedDeviceID
+        teardownAudio()
+        if setupTap() {
+            savedDeviceID = deviceID
+        } else {
+            trace("SoftwareVolume", "stale-tap rebuild failed")
+        }
+    }
+
+    private static func seconds(since hostTime: UInt64) -> Double {
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        let elapsed = mach_absolute_time() &- hostTime
+        return Double(elapsed) * Double(tb.numer) / Double(tb.denom) / 1e9
+    }
+
+    /// The pid of some other process currently sending audio to an output, if any.
+    @available(macOS 14.2, *)
+    private static func otherProcessPlaying() -> pid_t? {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        let sys = AudioObjectID(kAudioObjectSystemObject)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(sys, &addr, 0, nil, &size) == noErr else { return nil }
+        var procs = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(sys, &addr, 0, nil, &size, &procs) == noErr else { return nil }
+        let me = getpid()
+        for p in procs {
+            var pid: pid_t = 0, running: UInt32 = 0
+            var psize = UInt32(MemoryLayout<pid_t>.size), rsize = UInt32(MemoryLayout<UInt32>.size)
+            var pa = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID,
+                                                mScope: kAudioObjectPropertyScopeGlobal,
+                                                mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectGetPropertyData(p, &pa, 0, nil, &psize, &pid) == noErr, pid != me else { continue }
+            pa.mSelector = kAudioProcessPropertyIsRunningOutput
+            if AudioObjectGetPropertyData(p, &pa, 0, nil, &rsize, &running) == noErr, running != 0 { return pid }
+        }
+        return nil
     }
 
     /// Our own process's audio object(s), to exclude from the tap.
@@ -325,6 +384,7 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         guard keyCode == soundUp || keyCode == soundDown || keyCode == mute else { return false }
         if ((ns.data1 & 0xFF00) >> 8) == 0x0A {   // key down
             MainActor.assumeIsolated {
+                healStaleTap()
                 switch keyCode {
                 case soundUp:   setVolume(volume + step, bop: true)
                 case soundDown: setVolume(volume - step, bop: true)
