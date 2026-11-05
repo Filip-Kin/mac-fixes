@@ -326,6 +326,8 @@ private struct WindowsPane: View {
                        get: { win.closeQuitsEnabled }, set: { win.closeQuitsEnabled = $0 })
                 toggle("Double-click the title bar to maximize (our fill, not macOS zoom)",
                        get: { win.titlebarMaximizeEnabled }, set: { win.titlebarMaximizeEnabled = $0 })
+                toggle("Double-click a window's top or bottom edge to fill the screen height",
+                       get: { win.edgeMaximizeEnabled }, set: { win.edgeMaximizeEnabled = $0 })
             }
             .disabled(!features.windowsEnabled)
 

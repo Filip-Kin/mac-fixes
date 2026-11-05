@@ -69,6 +69,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
     var closeQuitsEnabled: Bool { get { flag("winCloseQuits", false) } set { setFlag("winCloseQuits", newValue) } }
     var dividerResizeEnabled: Bool { get { flag("winDividerResize", true) } set { setFlag("winDividerResize", newValue) } }
     var titlebarMaximizeEnabled: Bool { get { flag("winTitlebarMax", false) } set { setFlag("winTitlebarMax", newValue) } }
+    var edgeMaximizeEnabled: Bool { get { flag("winEdgeVMax", true) } set { setFlag("winEdgeVMax", newValue) } }
     var focusFollowsEnabled: Bool { get { flag("winFocusFollows", false) } set { setFlag("winFocusFollows", newValue) } }
     var focusRaises: Bool { get { flag("winFocusRaises", true) } set { setFlag("winFocusRaises", newValue) } }
 
@@ -120,7 +121,9 @@ final class WindowFeature: Feature, @unchecked Sendable {
         if dividerResizeEnabled { seams.start() } else { seams.stop() }
         focus.raise = focusRaises
         if focusFollowsEnabled { focus.start() } else { focus.stop() }
-        titlebarMaximizeEnabled ? titlebar.start() : titlebar.stop()
+        titlebar.titlebarEnabled = titlebarMaximizeEnabled
+        titlebar.edgeEnabled = edgeMaximizeEnabled
+        (titlebarMaximizeEnabled || edgeMaximizeEnabled) ? titlebar.start() : titlebar.stop()
         observers.configure(closeQuits: closeQuitsEnabled)
     }
 
