@@ -147,15 +147,22 @@ final class SeamResizer: @unchecked Sendable {
 
     private func detectSeam(at cursor: CGPoint) -> (vertical: Bool, a: CGRect, b: CGRect)? {
         let all = CGRect(x: -100_000, y: -100_000, width: 200_000, height: 200_000)
+        // CGWindowList order is front-to-back, so a lower index is closer to the user.
         let frames = AXWindow.onScreenWindowFrames(excluding: nil, intersecting: all)
-        for a in frames {
-            for b in frames where a != b {
+        // A window stacked in front of the pair that covers the cursor owns the click.
+        func covered(_ i: Int, _ j: Int) -> Bool {
+            frames.indices.contains { k in
+                k != i && k != j && k < max(i, j) && frames[k].contains(cursor)
+            }
+        }
+        for (i, a) in frames.enumerated() {
+            for (j, b) in frames.enumerated() where i != j {
                 // Vertical seam: a on the left, b on the right, edges touching.
                 if abs(a.maxX - b.minX) <= seamTolerance {
                     let top = max(a.minY, b.minY), bottom = min(a.maxY, b.maxY)
                     let seamX = (a.maxX + b.minX) / 2
                     if bottom - top > minOverlap, abs(cursor.x - seamX) <= grab,
-                       cursor.y > top, cursor.y < bottom {
+                       cursor.y > top, cursor.y < bottom, !covered(i, j) {
                         return (true, a, b)
                     }
                 }
@@ -164,7 +171,7 @@ final class SeamResizer: @unchecked Sendable {
                     let left = max(a.minX, b.minX), right = min(a.maxX, b.maxX)
                     let seamY = (a.maxY + b.minY) / 2
                     if right - left > minOverlap, abs(cursor.y - seamY) <= grab,
-                       cursor.x > left, cursor.x < right {
+                       cursor.x > left, cursor.x < right, !covered(i, j) {
                         return (false, a, b)
                     }
                 }
