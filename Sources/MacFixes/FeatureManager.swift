@@ -194,7 +194,9 @@ final class FeatureManager: ObservableObject {
         if monitorVolumeEnabled { _ = monitorVolume.start() }
         if softwareVolumeEnabled { _ = softwareVolume.start() }
         if connectEnabled { _ = connect.start() }
-        if hideDock { DockControl.setHidden(true) }
+        // Only touch the Dock when it is not already hidden: restarting it on
+        // every launch makes it flash up on screen.
+        if hideDock, !DockControl.isHidden { DockControl.setHidden(true) }
         // Reapply the persistent modifier swap and start its hot-plug watcher,
         // even if the event-tap part of the keyboard feature is off.
         keyboard.modifierSwap.reapplyIfEnabled()
@@ -207,6 +209,14 @@ final class FeatureManager: ObservableObject {
 
 /// Hides or restores the macOS Dock via its `defaults`.
 enum DockControl {
+    /// True if the Dock is already auto-hidden with the long reveal delay.
+    static var isHidden: Bool {
+        let d = "com.apple.dock" as CFString
+        let auto = CFPreferencesCopyAppValue("autohide" as CFString, d) as? Bool ?? false
+        let delay = (CFPreferencesCopyAppValue("autohide-delay" as CFString, d) as? NSNumber)?.doubleValue ?? 0
+        return auto && delay >= 1000
+    }
+
     static func setHidden(_ hidden: Bool) {
         if hidden {
             run(["/usr/bin/defaults", "write", "com.apple.dock", "autohide", "-bool", "true"])

@@ -146,8 +146,9 @@ can have its own shortcut and its own menu-bar item.
 
 One-button toggles that wrap `defaults write`, each with a reset to the macOS
 default: instant Dock, scale minimize, no window animations, Finder hidden files
-and all extensions, fast key repeat, disable press-and-hold accents, and F-keys
-as standard function keys.
+and all extensions, fast key repeat, disable press-and-hold accents, F-keys
+as standard function keys, and disable trackpad Force Click / Look Up (no more
+yellow highlight and dictionary popup when selecting text).
 
 ### Launch at login
 

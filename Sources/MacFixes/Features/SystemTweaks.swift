@@ -158,6 +158,24 @@ final class SystemTweaks: ObservableObject {
             needsRelogin: true),
 
         Tweak(
+            id: "no-force-click",
+            title: "Trackpad: disable Force Click & Look Up",
+            detail: "Stops a firm press or three-finger tap from triggering the yellow highlight and “Look Up in Dictionary”, so selecting text just selects it.",
+            applyCommands: [
+                ["defaults", "write", "-g", "com.apple.trackpad.forceClick", "-bool", "false"],
+                ["defaults", "write", "com.apple.AppleMultitouchTrackpad", "ForceSuppressed", "-bool", "true"],
+                ["defaults", "write", "com.apple.AppleMultitouchTrackpad", "TrackpadThreeFingerTapGesture", "-int", "0"],
+                ["defaults", "write", "com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadThreeFingerTapGesture", "-int", "0"],
+            ],
+            resetCommands: [
+                ["defaults", "delete", "-g", "com.apple.trackpad.forceClick"],
+                ["defaults", "delete", "com.apple.AppleMultitouchTrackpad", "ForceSuppressed"],
+                ["defaults", "delete", "com.apple.AppleMultitouchTrackpad", "TrackpadThreeFingerTapGesture"],
+                ["defaults", "delete", "com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadThreeFingerTapGesture"],
+            ],
+            needsRelogin: true),
+
+        Tweak(
             id: "fn-keys-standard",
             title: "Keyboard: F-keys act as standard function keys",
             detail: "Makes F1–F12 behave as plain function keys (so ⌃F12 works without Fn); media keys then need Fn held.",

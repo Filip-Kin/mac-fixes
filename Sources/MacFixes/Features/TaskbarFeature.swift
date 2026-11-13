@@ -41,6 +41,11 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
     private var peekPanel: PeekPanel?
     private var calendarPanel: CalendarPanel?
     private var calMonitor: Any?
+    /// Displays a fullscreen window covers, and the subset whose bar is
+    /// currently slid out because the pointer hit the bottom edge.
+    private var fullscreenDisplays: Set<CGDirectDisplayID> = []
+    private var revealedDisplays: Set<CGDirectDisplayID> = []
+    private var edgeTimer: Timer?
     private let model = TaskbarModel()
     private var allScreens: Bool { UserDefaults.standard.bool(forKey: "taskbarAllScreens") }
 
@@ -65,6 +70,9 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
             model.onLayoutChange = { [weak self] in
                 MainActor.assumeIsolated { self?.placePanels() }
             }
+            model.onFullscreenCheck = { [weak self] in
+                MainActor.assumeIsolated { self?.updateFullscreenVisibility() }
+            }
             model.onPeekChange = { [weak self] state in
                 MainActor.assumeIsolated { self?.updatePeek(state) }
             }
@@ -86,6 +94,9 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
             peekPanel = nil
             closeCalendar()
             calendarPanel = nil
+            edgeTimer?.invalidate(); edgeTimer = nil
+            fullscreenDisplays = []
+            revealedDisplays = []
             for p in panels { p.orderOut(nil) }
             panels = []
             TaskbarLayout.bottomInset = 0
@@ -130,11 +141,89 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
         panels = targets.map { screen in
             let p = TaskbarPanel(model: model)
             p.place(on: screen)
-            p.orderFrontRegardless()
+            if !Self.isCoveredByWindow(screen.displayID) { p.orderFrontRegardless() }
             return p
         }
         TaskbarLayout.bottomInset = TaskbarMetrics.barHeight
         TaskbarLayout.reservedDisplays = Set(targets.map { $0.displayID })
+    }
+
+    /// Hides the bar on any display where a window fills the whole screen
+    /// (native fullscreen, or a browser's F11 / video fullscreen). While it is
+    /// hidden, pushing the pointer to the bottom edge slides it back; moving
+    /// away hides it again. Normal windows bring it back for good.
+    @MainActor
+    private func updateFullscreenVisibility() {
+        let now = Set(panels.map { $0.displayID }.filter { Self.isCoveredByWindow($0) })
+        if now != fullscreenDisplays { trace("taskbar", "fullscreen displays \(fullscreenDisplays) -> \(now)") }
+        fullscreenDisplays = now
+        revealedDisplays.formIntersection(fullscreenDisplays)
+        applyBarVisibility()
+        // Poll the pointer only while a fullscreen window is up; global
+        // mouse-moved events are not reliably delivered in fullscreen Spaces.
+        if fullscreenDisplays.isEmpty {
+            edgeTimer?.invalidate(); edgeTimer = nil
+        } else if edgeTimer == nil {
+            let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.pointerMoved() }
+            }
+            RunLoop.main.add(t, forMode: .common)
+            edgeTimer = t
+        }
+    }
+
+    @MainActor
+    private func applyBarVisibility() {
+        for p in panels {
+            let hide = fullscreenDisplays.contains(p.displayID) && !revealedDisplays.contains(p.displayID)
+            if hide, p.isVisible {
+                p.orderOut(nil)
+                if peekPanel?.isVisible == true { model.hoverExit() }
+            } else if !hide, !p.isVisible {
+                p.orderFrontRegardless()
+            }
+        }
+    }
+
+    @MainActor
+    private func pointerMoved() {
+        let loc = NSEvent.mouseLocation
+        var changed = false
+        for p in panels where fullscreenDisplays.contains(p.displayID) {
+            guard let screen = NSScreen.screens.first(where: { $0.displayID == p.displayID }) else { continue }
+            let f = screen.frame
+            if revealedDisplays.contains(p.displayID) {
+                // Stay while the pointer is on the bar, its popup or the calendar.
+                let onBar = f.contains(loc) && loc.y <= f.minY + TaskbarMetrics.barHeight + 4
+                if !onBar, !pointerInPeekZone(), calendarPanel?.isVisible != true {
+                    revealedDisplays.remove(p.displayID); changed = true
+                }
+            } else if f.contains(loc) || (loc.x >= f.minX && loc.x <= f.maxX && loc.y <= f.minY + 1 && loc.y >= f.minY - 1) {
+                if loc.y <= f.minY + 1 { revealedDisplays.insert(p.displayID); changed = true }
+            }
+        }
+        if changed {
+            trace("taskbar", "revealed \(revealedDisplays) pointer \(loc)")
+            applyBarVisibility()
+        }
+    }
+
+    /// True if an ordinary window on the current Space covers the display
+    /// edge to edge, menu bar area included (a maximized window never does).
+    private static func isCoveredByWindow(_ display: CGDirectDisplayID) -> Bool {
+        let d = CGDisplayBounds(display)
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return false }
+        let me = getpid()
+        for w in list {
+            guard (w[kCGWindowLayer as String] as? Int) == 0,
+                  (w[kCGWindowOwnerPID as String] as? pid_t) != me,
+                  ((w[kCGWindowAlpha as String] as? Double) ?? 1) > 0,
+                  let dict = w[kCGWindowBounds as String] as? NSDictionary,
+                  let b = CGRect(dictionaryRepresentation: dict as CFDictionary) else { continue }
+            if b.minX <= d.minX + 2, b.minY <= d.minY + 2, b.maxX >= d.maxX - 2, b.maxY >= d.maxY - 2 { return true }
+        }
+        return false
     }
 
     /// The popup, plus the strip below it down to the screen edge (the gap
@@ -202,6 +291,9 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     @Published private(set) var apps: [TaskbarApp] = []
     @Published private(set) var peek: Peek?
     var onLayoutChange: (() -> Void)?
+    /// Set by the feature: hide the bars on a display a window is covering
+    /// edge to edge (native or browser fullscreen), show them again after.
+    var onFullscreenCheck: (() -> Void)?
     var onPeekChange: ((Peek?) -> Void)?
     /// Set by the feature: whether the pointer is over the popup or the path to it.
     var pointerInPeekZone: (() -> Bool)?
@@ -288,6 +380,16 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
             MainActor.assumeIsolated { self?.scheduleRefresh() }
             return e
         }) { inputMonitors.append(m) }
+        // Entering or leaving fullscreen switches Space; the animation runs
+        // ~0.7s, so check once straight away and once after it settles.
+        observers.append(wc.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.onFullscreenCheck?()
+                    self?.scheduleRefresh(after: 0.8)
+                }
+        })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -374,6 +476,7 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
             result.append(make(app, pinned: false, frontPID: frontPID))
         }
         apps = result
+        onFullscreenCheck?()
     }
 
     /// Finder is always running, so treat it as "open" only when it actually has
@@ -1168,6 +1271,8 @@ final class CalendarPanel: NSPanel {
 /// A borderless, non-activating panel pinned to the bottom edge, floating above
 /// normal windows and present on every Space.
 final class TaskbarPanel: NSPanel {
+    private(set) var displayID: CGDirectDisplayID = 0
+
     init(model: TaskbarModel) {
         super.init(contentRect: .zero,
                    styleMask: [.borderless, .nonactivatingPanel],
@@ -1181,6 +1286,7 @@ final class TaskbarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 
     func place(on screen: NSScreen) {
+        displayID = screen.displayID
         let f = screen.frame
         setFrame(NSRect(x: f.minX, y: f.minY, width: f.width, height: TaskbarMetrics.barHeight), display: true)
     }
