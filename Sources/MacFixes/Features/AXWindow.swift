@@ -3,6 +3,15 @@ import ApplicationServices
 
 /// Private HIServices call that returns an AX window element's CGWindowID —
 /// the only reliable way to tell apart same-size stacked windows of one app.
+/// Carbon's pid -> ProcessSerialNumber (unavailable in Swift's headers, still exported).
+@_silgen_name("GetProcessForPID")
+private func GetProcessForPID(_ pid: pid_t, _ psn: UnsafeMutablePointer<ProcessSerialNumber>) -> OSStatus
+
+/// Builds an AX element from a pid + element id, which reaches windows on other
+/// Spaces that the normal windows list leaves out.
+@_silgen_name("_AXUIElementCreateWithRemoteToken")
+private func _AXUIElementCreateWithRemoteToken(_ data: CFData) -> Unmanaged<AXUIElement>?
+
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
 
@@ -157,9 +166,12 @@ enum AXWindow {
         return out
     }
 
-    /// All normal on-screen windows, front-to-back, for the switcher.
-    static func allWindows() -> [(id: CGWindowID, pid: pid_t, title: String, frame: CGRect)] {
-        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+    /// All normal windows, front-to-back, for the switcher. On-screen ones
+    /// only by default; `onScreenOnly: false` also returns windows on other
+    /// Spaces (and minimized or hidden ones), which the caller must filter.
+    static func allWindows(onScreenOnly: Bool = true) -> [(id: CGWindowID, pid: pid_t, title: String, frame: CGRect)] {
+        let opts: CGWindowListOption = onScreenOnly
+            ? [.optionOnScreenOnly, .excludeDesktopElements] : [.optionAll, .excludeDesktopElements]
         guard let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { return [] }
         var out: [(CGWindowID, pid_t, String, CGRect)] = []
         for w in info {
@@ -199,6 +211,155 @@ enum AXWindow {
         }
         if let best, best.dist < 20 { return best.el }
         return nil
+    }
+
+    // MARK: Windows on other Spaces
+
+    /// The AX element of one window by id, found by trying element ids 0..<1000
+    /// for the process (about 20 ms). Works for windows on other Spaces.
+    static func elementByRemoteToken(pid: pid_t, windowID: CGWindowID) -> AXUIElement? {
+        var token = Data(count: 20)
+        var p = pid, zero: Int32 = 0, magic: Int32 = 0x636f636f
+        token.replaceSubrange(0..<4, with: Data(bytes: &p, count: 4))
+        token.replaceSubrange(4..<8, with: Data(bytes: &zero, count: 4))
+        token.replaceSubrange(8..<12, with: Data(bytes: &magic, count: 4))
+        for i in 0..<1000 {
+            var id = UInt64(i)
+            token.replaceSubrange(12..<20, with: Data(bytes: &id, count: 8))
+            guard let el = _AXUIElementCreateWithRemoteToken(token as CFData)?.takeRetainedValue() else { continue }
+            AXUIElementSetMessagingTimeout(el, 0.05)
+            var w: CGWindowID = 0
+            if _AXUIElementGetWindow(el, &w) == .success, w == windowID { return el }
+        }
+        return nil
+    }
+
+    /// Windows sitting on other Spaces that the accessibility windows list does
+    /// not show (e.g. the desktop's windows while a display is in native
+    /// fullscreen), grouped by owner pid, front-to-back. Titled, reasonably
+    /// sized windows that belong to a Space; hidden tab windows and helpers
+    /// are left out. Callers drop the ids their AX list already has.
+    static func otherSpaceWindows() -> [pid_t: [(id: CGWindowID, title: String)]] {
+        guard let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return [:] }
+        var out: [pid_t: [(CGWindowID, String)]] = [:]
+        for w in info {
+            guard (w[kCGWindowLayer as String] as? Int) == 0,
+                  (w[kCGWindowIsOnscreen as String] as? Bool) != true,
+                  let n = w[kCGWindowNumber as String] as? CGWindowID,
+                  let pid = w[kCGWindowOwnerPID as String] as? pid_t,
+                  let title = w[kCGWindowName as String] as? String, !title.isEmpty,
+                  let bounds = w[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  rect.width >= 200, rect.height >= 120,
+                  isOnSomeSpace(n) else { continue }
+            out[pid, default: []].append((n, title))
+        }
+        return out
+    }
+
+    /// True if the window lives on some Space. Hidden tab windows, helper
+    /// windows and minimized-to-nowhere ones belong to none.
+    static func isOnSomeSpace(_ wid: CGWindowID) -> Bool {
+        typealias MainConn = @convention(c) () -> Int32
+        typealias SpacesFor = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+        guard let h = dlopen(nil, RTLD_NOW),
+              let c = dlsym(h, "CGSMainConnectionID"), let f = dlsym(h, "CGSCopySpacesForWindows") else { return false }
+        let conn = unsafeBitCast(c, to: MainConn.self)()
+        let spaces = unsafeBitCast(f, to: SpacesFor.self)(conn, 0x7, [NSNumber(value: wid)] as CFArray)?.takeRetainedValue()
+        return ((spaces as? [Any])?.isEmpty == false)
+    }
+
+    /// True if the window sits in a native fullscreen Space (Space type 4).
+    static func isInFullscreenSpace(_ wid: CGWindowID) -> Bool {
+        typealias MainConn = @convention(c) () -> Int32
+        typealias SpacesFor = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+        typealias SpaceType = @convention(c) (Int32, UInt64) -> Int32
+        guard let h = dlopen(nil, RTLD_NOW),
+              let c = dlsym(h, "CGSMainConnectionID"), let f = dlsym(h, "CGSCopySpacesForWindows"),
+              let t = dlsym(h, "SLSSpaceGetType") else { return false }
+        let conn = unsafeBitCast(c, to: MainConn.self)()
+        let spaces = unsafeBitCast(f, to: SpacesFor.self)(conn, 0x7, [NSNumber(value: wid)] as CFArray)?.takeRetainedValue()
+        let type = unsafeBitCast(t, to: SpaceType.self)
+        return (spaces as? [NSNumber] ?? []).contains { type(conn, $0.uint64Value) == 4 }
+    }
+
+    /// Brings one specific window forward even if it sits on another Space
+    /// (WindowServer switches to that Space), for windows the accessibility
+    /// API cannot see from here. Falls back to plain app activation.
+    @MainActor
+    static func focusAcrossSpaces(windowID: CGWindowID, pid: pid_t) {
+        NotificationCenter.default.post(name: .windowRaised, object: nil,
+                                        userInfo: ["pid": pid, "windowID": windowID])
+        // A window in its own fullscreen Space: activating the app and raising
+        // the window is what the taskbar does and is enough. Fronting the
+        // process on the window id and clearing "minimized" were not.
+        if isInFullscreenSpace(windowID) {
+            trace("AltTab", "focusAcrossSpaces wid=\(windowID) pid=\(pid) fullscreen space: activate + raise")
+            NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+            func raiseOnly() {
+                guard let el = elementByRemoteToken(pid: pid, windowID: windowID) ?? axWindowsByID(pid: pid)[windowID] else { return }
+                AXUIElementPerformAction(el, kAXRaiseAction as CFString)
+            }
+            raiseOnly()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { raiseOnly() }
+            return
+        }
+        typealias SetFront = @convention(c) (UnsafeMutablePointer<ProcessSerialNumber>, UInt32, UInt32) -> Int32
+        typealias PostEvent = @convention(c) (UnsafeMutablePointer<ProcessSerialNumber>, UnsafeMutablePointer<UInt8>) -> Int32
+        var psn = ProcessSerialNumber()
+        let skylight = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_NOW)
+        if GetProcessForPID(pid, &psn) == 0, let h = skylight, let f = dlsym(h, "_SLPSSetFrontProcessWithOptions") {
+            // Front the process on this specific window; WindowServer switches
+            // to the window's Space.
+            let rc = unsafeBitCast(f, to: SetFront.self)(&psn, windowID, 0x200 /* user generated */)
+            trace("AltTab", "focusAcrossSpaces wid=\(windowID) pid=\(pid) setFront rc=\(rc)")
+            // Then make that window key, the way the system does on a click.
+            if let p = dlsym(h, "SLPSPostEventRecordTo") {
+                var bytes = [UInt8](repeating: 0, count: 0xf8)
+                bytes[0x04] = 0xf8; bytes[0x3a] = 0x10
+                var wid = windowID
+                memcpy(&bytes[0x3c], &wid, MemoryLayout<UInt32>.size)
+                memset(&bytes[0x20], 0xff, 0x10)
+                let post = unsafeBitCast(p, to: PostEvent.self)
+                bytes[0x08] = 0x01; _ = post(&psn, &bytes)
+                bytes[0x08] = 0x02; _ = post(&psn, &bytes)
+            }
+        } else {
+            trace("AltTab", "focusAcrossSpaces: no process serial number for pid=\(pid)")
+        }
+        NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+        // Raising the exact window's AX element is what makes macOS switch to
+        // its Space; the plain windows list cannot see it from here, so build
+        // the element directly. Again shortly after, once the Space has moved.
+        func raise() {
+            guard let el = elementByRemoteToken(pid: pid, windowID: windowID) ?? axWindowsByID(pid: pid)[windowID] else {
+                trace("AltTab", "focusAcrossSpaces: no AX element for wid=\(windowID)")
+                return
+            }
+            AXUIElementSetAttributeValue(el, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            AXUIElementPerformAction(el, kAXRaiseAction as CFString)
+            AXUIElementSetAttributeValue(el, kAXMainAttribute as CFString, kCFBooleanTrue)
+        }
+        raise()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { raise() }
+    }
+
+    /// Brings the app forward and opens a new window: its real "New Window"
+    /// menu item, or Cmd+N when it has none (Cmd+N is "new file" in some apps,
+    /// so the menu item comes first).
+    @MainActor
+    static func openNewWindow(pid: pid_t) {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+        app.activate(options: [])
+        if pressMenuItem(pid: pid, titled: ["New Window", "New window"]) { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            let src = CGEventSource(stateID: .combinedSessionState)
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 0x2D /* N */, keyDown: true)
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 0x2D, keyDown: false)
+            down?.flags = .maskCommand; up?.flags = .maskCommand
+            down?.post(tap: .cghidEventTap); up?.post(tap: .cghidEventTap)
+        }
     }
 
     /// Press the app's menu item with one of these exact titles (e.g. "New

@@ -83,6 +83,7 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
                 MainActor.assumeIsolated { self?.pointerInPeekZone() ?? false }
             }
             placePanels()
+            updateFullscreenVisibility()
             return true
         }
     }
@@ -212,16 +213,36 @@ final class TaskbarFeature: Feature, @unchecked Sendable {
     /// edge to edge, menu bar area included (a maximized window never does).
     private static func isCoveredByWindow(_ display: CGDirectDisplayID) -> Bool {
         let d = CGDisplayBounds(display)
+        // A notched display's native fullscreen window starts below the notch
+        // band, not at the very top edge.
+        let notch = NSScreen.screens.first { $0.displayID == display }?.safeAreaInsets.top ?? 0
         guard let list = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return false }
         let me = getpid()
+        let top = d.minY + notch + 2, bottom = d.maxY - 2
+        // Full-width layer-0 windows per owner, as vertical spans. One window
+        // usually covers the display; Terminal's native fullscreen is split
+        // into a tab bar window plus a content window, so spans are merged.
+        var spans: [pid_t: [(lo: CGFloat, hi: CGFloat)]] = [:]
         for w in list {
             guard (w[kCGWindowLayer as String] as? Int) == 0,
-                  (w[kCGWindowOwnerPID as String] as? pid_t) != me,
+                  let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != me,
                   ((w[kCGWindowAlpha as String] as? Double) ?? 1) > 0,
                   let dict = w[kCGWindowBounds as String] as? NSDictionary,
                   let b = CGRect(dictionaryRepresentation: dict as CFDictionary) else { continue }
-            if b.minX <= d.minX + 2, b.minY <= d.minY + 2, b.maxX >= d.maxX - 2, b.maxY >= d.maxY - 2 { return true }
+            guard b.minX <= d.minX + 2, b.maxX >= d.maxX - 2 else { continue }
+            if b.minY <= top, b.maxY >= bottom { return true }
+            spans[pid, default: []].append((b.minY, b.maxY))
+        }
+        for (_, list) in spans where list.count > 1 {
+            var reach = top
+            var progressed = true
+            // Grow a covered run downward from the top edge.
+            while progressed, reach < bottom {
+                progressed = false
+                for s in list where s.lo <= reach + 2 && s.hi > reach { reach = s.hi; progressed = true }
+            }
+            if reach >= bottom { return true }
         }
         return false
     }
@@ -269,6 +290,9 @@ struct TaskbarApp: Identifiable, Equatable {
     let name: String
     let icon: NSImage?
     let pid: pid_t?         // nil when pinned but not running
+    /// Every running process of this app (several when it was launched with
+    /// `open -n`), `pid` first. Windows are gathered from all of them.
+    var pids: [pid_t] = []
     let isPinned: Bool
     var isActive: Bool
     var windowCount = 0
@@ -282,6 +306,7 @@ struct TaskbarApp: Identifiable, Equatable {
         a.id == b.id && a.isActive == b.isActive && a.isPinned == b.isPinned
             && a.isRunning == b.isRunning && a.name == b.name
             && a.windowCount == b.windowCount && a.focusedWindow == b.focusedWindow
+            && a.pids == b.pids
     }
 }
 
@@ -304,14 +329,15 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     struct TaskbarWindow: Identifiable {
         let id: Int
         let title: String
-        let element: AXUIElement
+        /// nil for a window on another Space that accessibility cannot list.
+        let element: AXUIElement?
         let pid: pid_t
         let windowID: CGWindowID
     }
 
     struct Peek: Identifiable {
         let id = UUID()
-        let pid: pid_t
+        let pids: [pid_t]
         let anchorX: CGFloat
         let windows: [TaskbarWindow]
     }
@@ -337,6 +363,8 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     private var pendingFocus: (pid: pid_t, windowID: CGWindowID, until: Date)?
 
     private let hidden: Set<String> = ["com.apple.tips"]
+    /// Windows on other Spaces by pid, refreshed on each rebuild.
+    private var otherSpace: [pid_t: [(id: CGWindowID, title: String)]] = [:]
 
     init() {
         pinned = defaults.stringArray(forKey: "taskbarPinned") ?? []
@@ -423,8 +451,8 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         pendingFocus = windowID == 0 ? nil : (pid, windowID, Date().addingTimeInterval(0.6))
         apps = apps.map { a in
             var a = a
-            a.isActive = a.pid == pid
-            if a.pid == pid, windowID != 0, let i = a.windowIDs.firstIndex(of: windowID) { a.focusedWindow = i }
+            a.isActive = a.pids.contains(pid)
+            if a.pids.contains(pid), windowID != 0, let i = a.windowIDs.firstIndex(of: windowID) { a.focusedWindow = i }
             return a
         }
         // Confirm once the app has caught up (a quicker read can still see the
@@ -447,19 +475,23 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         let running = NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular }
             .filter { !hidden.contains($0.bundleIdentifier ?? "") }
-        // key -> app, plus launch order (first instance of each app wins).
+        // key -> app, plus launch order. The first instance of each app is the
+        // one the button activates; the others only contribute their windows.
         var appByKey: [String: NSRunningApplication] = [:]
+        var instancesByKey: [String: [NSRunningApplication]] = [:]
         var launchOrder: [String] = []
         for app in running {
             let key = app.bundleIdentifier ?? "pid:\(app.processIdentifier)"
             if appByKey[key] == nil { appByKey[key] = app; launchOrder.append(key) }
+            instancesByKey[key, default: []].append(app)
         }
 
+        otherSpace = AXWindow.otherSpaceWindows()
         var result: [TaskbarApp] = []
         // Pinned block, in pinned order (running or not).
         for b in pinned {
             if let app = appByKey[b], !finderButClosed(b, app) {
-                result.append(make(app, pinned: true, frontPID: frontPID))
+                result.append(make(app, instances: instancesByKey[b] ?? [app], pinned: true, frontPID: frontPID))
             } else if let entry = pinnedEntry(bundleID: b) {
                 result.append(entry)   // not running (or Finder with no window) -> closed look
             }
@@ -473,7 +505,7 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         unpinnedOrder = order
         for k in order {
             guard let app = appByKey[k], !finderButClosed(k, app) else { continue }
-            result.append(make(app, pinned: false, frontPID: frontPID))
+            result.append(make(app, instances: instancesByKey[k] ?? [app], pinned: false, frontPID: frontPID))
         }
         apps = result
         onFullscreenCheck?()
@@ -485,21 +517,35 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         key == "com.apple.finder" && AXWindow.windowList(pid: app.processIdentifier).isEmpty
     }
 
-    private func make(_ app: NSRunningApplication, pinned: Bool, frontPID: pid_t?) -> TaskbarApp {
+    private func make(_ app: NSRunningApplication, instances: [NSRunningApplication],
+                      pinned: Bool, frontPID: pid_t?) -> TaskbarApp {
         let b = app.bundleIdentifier
         let isFinder = b == "com.apple.finder"
-        let wins = AXWindow.orderedWindows(pid: app.processIdentifier)
+        let pids = instances.map(\.processIdentifier)
         var item = TaskbarApp(id: b ?? "pid:\(app.processIdentifier)",
                           bundleID: b,
                           name: isFinder ? "File Explorer" : (app.localizedName ?? "App"),
                           icon: app.icon,
                           pid: app.processIdentifier,
                           isPinned: pinned,
-                          isActive: app.processIdentifier == frontPID)
-        item.windowCount = wins.windows.count
-        item.windowIDs = wins.windows.map(\.id)
-        item.focusedWindow = wins.focused
-        if let p = pendingFocus, p.pid == app.processIdentifier, Date() < p.until,
+                          isActive: frontPID.map { pids.contains($0) } ?? false)
+        item.pids = pids
+        // All instances' windows, one process after the other (the popup uses
+        // the same order, so dot N is card N).
+        var ids: [CGWindowID] = []
+        var focused: Int?
+        for pid in pids {
+            let wins = AXWindow.orderedWindows(pid: pid)
+            if let f = wins.focused, focused == nil || pid == frontPID { focused = ids.count + f }
+            ids += wins.windows.map(\.id)
+            // Then the pid's windows on other Spaces, in the popup's order too.
+            let known = Set(wins.windows.map(\.id))
+            ids += (otherSpace[pid] ?? []).map(\.id).filter { !known.contains($0) }
+        }
+        item.windowCount = ids.count
+        item.windowIDs = ids
+        item.focusedWindow = focused
+        if let p = pendingFocus, pids.contains(p.pid), Date() < p.until,
            let i = item.windowIDs.firstIndex(of: p.windowID) {
             item.focusedWindow = i
         }
@@ -584,7 +630,7 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
         if item.pid == ProcessInfo.processInfo.processIdentifier { focusSelf(); return }
         // Already frontmost: minimize its window, like clicking a Windows taskbar
         // button for the active app.
-        if item.isActive, let pid = item.pid {
+        if item.isActive, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? item.pid {
             if minimizeFocusedWindow(pid: pid) {
                 // macOS leaves the app active with nothing on screen, so the
                 // taskbar kept it highlighted and the next click did nothing.
@@ -597,7 +643,11 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
             }
             return
         }
-        if let pid = item.pid {
+        if let first = item.pid {
+            // With several processes, activate one that actually has a window.
+            let pid = item.pids.count > 1
+                ? (item.pids.first { !AXWindow.windowList(pid: $0, timeout: 0.3).isEmpty } ?? first)
+                : first
             NSRunningApplication(processIdentifier: pid)?.activate(options: [])
             unminimizeIfAllHidden(pid: pid)
         } else if let b = item.bundleID,
@@ -704,26 +754,17 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     /// New window: Cmd+N in the running app, or just launch it if it is closed.
     @MainActor
     func newWindow(_ item: TaskbarApp) {
-        guard let pid = item.pid, let app = NSRunningApplication(processIdentifier: pid) else {
+        guard let pid = item.pid, NSRunningApplication(processIdentifier: pid) != nil else {
             focus(item); return
         }
-        app.activate(options: [])
-        // Prefer the app's real "New Window" menu item (Cmd+N is "new file" in
-        // some apps like VSCode); fall back to Cmd+N only if there is no such item.
-        if AXWindow.pressMenuItem(pid: pid, titled: ["New Window", "New window"]) { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            let src = CGEventSource(stateID: .combinedSessionState)
-            let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_N), keyDown: true)
-            let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_N), keyDown: false)
-            down?.flags = .maskCommand; up?.flags = .maskCommand
-            down?.post(tap: .cghidEventTap); up?.post(tap: .cghidEventTap)
-        }
+        AXWindow.openNewWindow(pid: pid)
     }
 
     @MainActor
     func raise(_ win: TaskbarWindow) {
         setPeek(nil)
-        AXWindow.raise(win.element, pid: win.pid)
+        if let el = win.element { AXWindow.raise(el, pid: win.pid) }
+        else { AXWindow.focusAcrossSpaces(windowID: win.windowID, pid: win.pid) }
     }
 
     // MARK: Hover popover
@@ -732,10 +773,11 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     func hoverEnter(_ item: TaskbarApp) {
         closeWork?.cancel()
         showWork?.cancel()
-        guard let pid = item.pid else { return }   // not running: nothing to show
+        guard item.pid != nil else { return }   // not running: nothing to show
+        let pids = item.pids
         let x = NSEvent.mouseLocation.x
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.showPeek(pid: pid, anchorX: x) }
+            MainActor.assumeIsolated { self?.showPeek(pids: pids, anchorX: x) }
         }
         showWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
@@ -772,7 +814,8 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     func closeWindow(_ win: TaskbarWindow) {
         guard let peek else { return }
         var btn: CFTypeRef?
-        if AXUIElementCopyAttributeValue(win.element, kAXCloseButtonAttribute as CFString, &btn) == .success,
+        let element = win.element ?? AXWindow.elementByRemoteToken(pid: win.pid, windowID: win.windowID)
+        if let element, AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &btn) == .success,
            let b = btn, CFGetTypeID(b) == AXUIElementGetTypeID() {
             // Tell close-quits a window was closed on purpose (it cannot see
             // clicks inside Mac Fixes' own panels).
@@ -780,11 +823,11 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
                                             userInfo: ["pid": win.pid])
             AXUIElementPerformAction(b as! AXUIElement, kAXPressAction as CFString)
         }
-        let pid = peek.pid, x = peek.anchorX
+        let pids = peek.pids, x = peek.anchorX
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.peek?.pid == pid else { return }
-                self.showPeek(pid: pid, anchorX: x)
+                guard let self, self.peek?.pids == pids else { return }
+                self.showPeek(pids: pids, anchorX: x)
             }
         }
     }
@@ -793,19 +836,27 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     func keepPeek() { closeWork?.cancel() }
 
     @MainActor
-    private func showPeek(pid: pid_t, anchorX: CGFloat) {
-        let cgList = AXWindow.onScreenWindowIDs(pid: pid)
-        // Same order as the taskbar dots (oldest first), so dot N is card N.
-        let wins = AXWindow.orderedWindows(pid: pid).windows.enumerated().map { (i, e) -> TaskbarWindow in
-            TaskbarWindow(id: i, title: e.title, element: e.element, pid: pid,
-                          windowID: e.id != 0 ? e.id : matchWindowID(e.element, in: cgList))
+    private func showPeek(pids: [pid_t], anchorX: CGFloat) {
+        // Same order as the taskbar dots (per process, oldest first), so dot N is card N.
+        var wins: [TaskbarWindow] = []
+        for pid in pids {
+            let cgList = AXWindow.onScreenWindowIDs(pid: pid)
+            let ax = AXWindow.orderedWindows(pid: pid).windows
+            for e in ax {
+                wins.append(TaskbarWindow(id: wins.count, title: e.title, element: e.element, pid: pid,
+                                          windowID: e.id != 0 ? e.id : matchWindowID(e.element, in: cgList)))
+            }
+            let known = Set(ax.map(\.id))
+            for o in AXWindow.otherSpaceWindows()[pid] ?? [] where !known.contains(o.id) {
+                wins.append(TaskbarWindow(id: wins.count, title: o.title, element: nil, pid: pid, windowID: o.id))
+            }
         }
         guard !wins.isEmpty else { setPeek(nil); return }
         // Seed from cache so re-hovering shows thumbnails instantly; refresh below.
         var seeded: [CGWindowID: NSImage] = [:]
         for w in wins where w.windowID != 0 { if let img = thumbCache[w.windowID] { seeded[w.windowID] = img } }
         thumbnails = seeded
-        setPeek(Peek(pid: pid, anchorX: anchorX, windows: wins))
+        setPeek(Peek(pids: pids, anchorX: anchorX, windows: wins))
         captureThumbnails(wins.compactMap { $0.windowID == 0 ? nil : $0.windowID })
     }
 
@@ -828,7 +879,7 @@ final class TaskbarModel: ObservableObject, @unchecked Sendable {
     private func captureThumbnails(_ ids: [CGWindowID]) {
         guard !ids.isEmpty else { return }
         Task { @MainActor [weak self] in
-            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return }
+            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return }
             for id in ids {
                 guard let self, self.peek != nil else { return }
                 guard let win = content.windows.first(where: { $0.windowID == id }) else { continue }
@@ -1104,7 +1155,7 @@ private struct PeekView: View {
     /// The card matching the taskbar's focus dash: the focused window of the
     /// frontmost app (card order is dot order).
     private var focusedIndex: Int? {
-        guard let pid = model.peek?.pid,
+        guard let pid = model.peek?.pids.first,
               let app = model.apps.first(where: { $0.pid == pid }), app.isActive else { return nil }
         return app.focusedWindow
     }

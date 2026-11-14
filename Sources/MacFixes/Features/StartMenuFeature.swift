@@ -509,6 +509,17 @@ final class StartMenuModel: ObservableObject, @unchecked Sendable {
         defaults.set(usage, forKey: "startMenuUsage")
         switch r.action {
         case .openFile(let url):
+            // An app that is already running gets a new window, instead of
+            // just bringing its existing one forward.
+            if url.pathExtension == "app", let id = Bundle(url: url)?.bundleIdentifier,
+               let running = NSRunningApplication.runningApplications(withBundleIdentifier: id).first {
+                // Only via a real "New Window" menu item: Cmd+N would create a
+                // note, file or tab in apps that have no such item.
+                running.activate(options: [])
+                if AXWindow.pressMenuItem(pid: running.processIdentifier, titled: ["New Window", "New window"]) {
+                    return true
+                }
+            }
             return NSWorkspace.shared.open(url)
         case .openFolder(let url):
             // Open in a NEW Finder window, frontmost, without pulling old ones up.

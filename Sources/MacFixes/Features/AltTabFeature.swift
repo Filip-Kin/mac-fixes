@@ -146,7 +146,8 @@ final class AltTabFeature: Feature, @unchecked Sendable {
         panel?.orderOut(nil)
         if let w = model.selected() {
             trace("AltTab", "commit raise \"\(w.title)\" pid=\(w.pid)")
-            AXWindow.raise(w.element, pid: w.pid)
+            if let el = w.element { AXWindow.raise(el, pid: w.pid) }
+            else { AXWindow.focusAcrossSpaces(windowID: w.id, pid: w.pid) }
         } else {
             trace("AltTab", "commit no selection")
         }
@@ -181,7 +182,8 @@ final class AltTabModel: ObservableObject, @unchecked Sendable {
         let title: String
         let appName: String
         let appIcon: NSImage?
-        let element: AXUIElement
+        /// nil for a window on another Space that accessibility cannot reach yet.
+        let element: AXUIElement?
         let pid: pid_t
     }
 
@@ -213,6 +215,35 @@ final class AltTabModel: ObservableObject, @unchecked Sendable {
             list.append(Win(id: w.id, title: w.title.isEmpty ? name : w.title,
                             appName: name, appIcon: iconByPid[w.pid] ?? nil, element: el, pid: w.pid))
         }
+        // Windows on other Spaces (e.g. the desktop while a display sits in a
+        // native fullscreen Space). Accessibility cannot see those, and it does
+        // list minimized windows, so a window with no AX element that does sit
+        // on a Space is a real, un-minimized one. Hidden tab windows and
+        // helpers belong to no Space or have no title and are left out.
+        let seen = Set(list.map(\.id))
+        for w in AXWindow.allWindows(onScreenOnly: false) where !seen.contains(w.id) {
+            guard !w.title.isEmpty, w.frame.width >= 200, w.frame.height >= 120,
+                  let app = NSRunningApplication(processIdentifier: w.pid),
+                  app.activationPolicy == .regular, !app.isHidden else { continue }
+            if axByPid[w.pid] == nil { axByPid[w.pid] = AXWindow.axWindowsByID(pid: w.pid) }
+            guard AXWindow.isOnSomeSpace(w.id) else { continue }
+            // Accessibility does list some windows on other Spaces (a native
+            // fullscreen one, for instance) and every minimized one: use its
+            // element when it has one, but skip minimized windows.
+            let el = axByPid[w.pid]?[w.id]
+            if let el {
+                var minimized: CFTypeRef?
+                AXUIElementCopyAttributeValue(el, kAXMinimizedAttribute as CFString, &minimized)
+                if (minimized as? Bool) == true { continue }
+            }
+            if nameByPid[w.pid] == nil {
+                nameByPid[w.pid] = app.localizedName ?? "App"
+                iconByPid[w.pid] = app.icon
+            }
+            let name = nameByPid[w.pid] ?? "App"
+            list.append(Win(id: w.id, title: w.title,
+                            appName: name, appIcon: iconByPid[w.pid] ?? nil, element: el, pid: w.pid))
+        }
         windows = list
         var seeded: [CGWindowID: NSImage] = [:]
         for w in list { if let img = thumbCache[w.id] { seeded[w.id] = img } }
@@ -225,7 +256,7 @@ final class AltTabModel: ObservableObject, @unchecked Sendable {
     private func captureAll(_ ids: [CGWindowID]) {
         guard !ids.isEmpty else { return }
         Task { @MainActor [weak self] in
-            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return }
+            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return }
             for id in ids {
                 guard let self, !self.windows.isEmpty else { return }
                 guard let win = content.windows.first(where: { $0.windowID == id }) else { continue }
