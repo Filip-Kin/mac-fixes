@@ -106,17 +106,22 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         if savedDeviceID != 0 { Self.setDeviceVolume(savedDeviceID, 1.0) }
     }
 
-    /// Tear down and rebuild the tap on the new default output. Without this the
-    /// aggregate device keeps replaying to the old device after a device switch.
+    /// Move the replay onto the new default output. Without this the aggregate
+    /// device keeps replaying to the old device after a device switch.
+    ///
+    /// The tap itself is kept: it is not tied to an output device, and a tap
+    /// created while coreaudiod is still unregistering the old one's IO context
+    /// (monitor unplugged -> speakers) starts without muting the running apps,
+    /// so they play straight to the device at 100%.
     private func handleDefaultDeviceChanged() {
         guard #available(macOS 14.2, *) else { return }
         let newUID = Self.defaultOutputUID()
         guard newUID != currentOutputUID else { return }
-        trace("SoftwareVolume", "default output changed -> \(newUID ?? "nil"); rebuilding tap")
+        trace("SoftwareVolume", "default output changed -> \(newUID ?? "nil"); rebuilding output")
         // Leave the old device at the level being heard, then take the new one to 100%.
         if savedDeviceID != 0 { Self.setDeviceVolume(savedDeviceID, muted ? 0 : volume) }
         savedDeviceVolume = nil; savedDeviceID = 0
-        teardownAudio()
+        teardownOutput()
         if setupTap() {
             forceCurrentDeviceToFull()   // keeps the current software volume/gain as-is
         } else {
@@ -144,17 +149,22 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
         defaultDeviceListener = nil
     }
 
-    private func teardownAudio() {
+    /// Stop replaying and drop the aggregate device; the tap stays.
+    private func teardownOutput() {
         if let p = ioProcID, aggID != 0 {
             AudioDeviceStop(aggID, p)
             AudioDeviceDestroyIOProcID(aggID, p)
             ioProcID = nil
         }
         if aggID != 0 { AudioHardwareDestroyAggregateDevice(aggID); aggID = 0 }
+        currentOutputUID = nil
+    }
+
+    private func teardownAudio() {
+        teardownOutput()
         if #available(macOS 14.2, *), tapID != 0 {
             AudioHardwareDestroyProcessTap(tapID); tapID = 0
         }
-        currentOutputUID = nil
     }
 
     // MARK: Audio tap
@@ -165,20 +175,34 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
             trace("SoftwareVolume", "no default output device")
             return false
         }
-        // Exclude our own audio so our replayed output isn't re-tapped (which
-        // both mutes it at the device and creates a feedback loop).
-        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: Self.selfProcessObjects())
-        desc.name = "Mac Fixes Volume"
-        desc.isPrivate = true
-        desc.muteBehavior = .mutedWhenTapped   // silence the normal render; we replay
+        if tapID == 0 {
+            // Exclude our own audio so our replayed output isn't re-tapped (which
+            // both mutes it at the device and creates a feedback loop).
+            let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: Self.selfProcessObjects())
+            desc.name = "Mac Fixes Volume"
+            desc.isPrivate = true
+            desc.muteBehavior = .mutedWhenTapped   // silence the normal render; we replay
 
-        var tap: AudioObjectID = 0
-        let ts = AudioHardwareCreateProcessTap(desc, &tap)
-        guard ts == noErr, tap != 0 else {
-            trace("SoftwareVolume", "create tap failed: \(ts) (needs audio-recording permission?)")
+            var tap: AudioObjectID = 0
+            let ts = AudioHardwareCreateProcessTap(desc, &tap)
+            guard ts == noErr, tap != 0 else {
+                trace("SoftwareVolume", "create tap failed: \(ts) (needs audio-recording permission?)")
+                return false
+            }
+            tapID = tap
+        }
+        var tapUIDAddr = AudioObjectPropertyAddress(mSelector: kAudioTapPropertyUID,
+                                                    mScope: kAudioObjectPropertyScopeGlobal,
+                                                    mElement: kAudioObjectPropertyElementMain)
+        var tapUIDRef: CFString?
+        var tapUIDSize = UInt32(MemoryLayout<CFString?>.size)
+        let us = withUnsafeMutablePointer(to: &tapUIDRef) {
+            AudioObjectGetPropertyData(tapID, &tapUIDAddr, 0, nil, &tapUIDSize, $0)
+        }
+        guard us == noErr, let tapUID = tapUIDRef as String? else {
+            trace("SoftwareVolume", "read tap UID failed: \(us)")
             return false
         }
-        tapID = tap
 
         let aggDesc: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Mac Fixes Volume",
@@ -189,7 +213,7 @@ final class SoftwareVolumeFeature: Feature, @unchecked Sendable {
             kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outUID]],
             kAudioAggregateDeviceTapListKey: [[
                 kAudioSubTapDriftCompensationKey: true,
-                kAudioSubTapUIDKey: desc.uuid.uuidString,
+                kAudioSubTapUIDKey: tapUID,
             ]],
         ]
         var agg: AudioObjectID = 0
