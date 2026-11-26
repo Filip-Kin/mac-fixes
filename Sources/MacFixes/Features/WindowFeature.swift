@@ -33,6 +33,13 @@ final class WindowFeature: Feature, @unchecked Sendable {
     private let seams = SeamResizer()
     private let focus = FocusFollows()
     private let titlebar = TitlebarMaximize()
+    private let arrows = ArrowSnap()
+    private let assist = SnapAssist()
+
+    init() {
+        snapper.assist = assist
+        arrows.assist = assist
+    }
 
     // Sub-toggles (default true except the intrusive ones).
     var snappingEnabled: Bool { get { flag("winSnapping", true) } set { setFlag("winSnapping", newValue) } }
@@ -66,6 +73,9 @@ final class WindowFeature: Feature, @unchecked Sendable {
         p.arguments = Array(argv.dropFirst())
         try? p.run(); p.waitUntilExit()
     }
+    // Win + arrows. Off by default: it takes Control + arrows from macOS.
+    var arrowSnapEnabled: Bool { get { flag("winArrowSnap", false) } set { setFlag("winArrowSnap", newValue) } }
+    var snapAssistEnabled: Bool { get { flag("winSnapAssist", false) } set { setFlag("winSnapAssist", newValue) } }
     var closeQuitsEnabled: Bool { get { flag("winCloseQuits", false) } set { setFlag("winCloseQuits", newValue) } }
     var dividerResizeEnabled: Bool { get { flag("winDividerResize", true) } set { setFlag("winDividerResize", newValue) } }
     var titlebarMaximizeEnabled: Bool { get { flag("winTitlebarMax", false) } set { setFlag("winTitlebarMax", newValue) } }
@@ -107,6 +117,8 @@ final class WindowFeature: Feature, @unchecked Sendable {
 
     func stop() {
         unregisterHotKeys()
+        arrows.stop()
+        MainActor.assumeIsolated { assist.dismiss() }
         snapper.stop()
         seams.stop()
         focus.stop()
@@ -118,6 +130,9 @@ final class WindowFeature: Feature, @unchecked Sendable {
     func reload() {
         if snappingEnabled { registerHotKeys() } else { unregisterHotKeys() }
         dragSnapEnabled ? snapper.start() : snapper.stop()
+        arrowSnapEnabled ? arrows.start() : arrows.stop()
+        assist.enabled = snapAssistEnabled
+        if !snapAssistEnabled { MainActor.assumeIsolated { assist.dismiss() } }
         if dividerResizeEnabled { seams.start() } else { seams.stop() }
         focus.raise = focusRaises
         if focusFollowsEnabled { focus.start() } else { focus.stop() }
@@ -155,6 +170,7 @@ final class SnapController: @unchecked Sendable {
     private var preview: NSWindow?
     private var pending: CGRect?            // AX-coords target for mouse-up
     private var pendingWindow: AXUIElement? // the window being dragged
+    var assist: SnapAssist?
     private let threshold: CGFloat = 6
     // The top (maximize) zone is deeper — it is the one people aim for most, and
     // a fast flick to the top pins the cursor at the edge a little short of it.
@@ -270,7 +286,11 @@ final class SnapController: @unchecked Sendable {
         let rawInt = Int(bitPattern: Unmanaged.passRetained(win).toOpaque())
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             let w = Unmanaged<AXUIElement>.fromOpaque(UnsafeMutableRawPointer(bitPattern: rawInt)!).takeRetainedValue()
+            if let f = AXWindow.frame(of: w) {
+                SnapMemory.note(w, frame: f, in: AXWindow.axVisibleFrame(AXWindow.screen(forAX: target)))
+            }
             AXWindow.setFrame(w, target)
+            MainActor.assumeIsolated { self.assist?.offer(after: w, waitForRelease: false) }
         }
     }
 

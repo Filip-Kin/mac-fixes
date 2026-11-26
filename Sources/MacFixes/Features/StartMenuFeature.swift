@@ -15,6 +15,7 @@ final class StartMenuFeature: Feature, @unchecked Sendable {
     private let model = StartMenuModel()
     private var flagsMonitors: [Any] = []
     private var keyMonitors: [Any] = []
+    private var hotKeyObserver: NSObjectProtocol?
     private var openKeyMonitor: Any?
     private var clickAwayMonitor: Any?
     private var taskbarClickMonitor: Any?
@@ -43,6 +44,7 @@ final class StartMenuFeature: Feature, @unchecked Sendable {
         MainActor.assumeIsolated {
             for m in flagsMonitors + keyMonitors { NSEvent.removeMonitor(m) }
             flagsMonitors = []; keyMonitors = []
+            if let o = hotKeyObserver { NotificationCenter.default.removeObserver(o); hotKeyObserver = nil }
             close(restoringFocus: false)
         }
     }
@@ -66,6 +68,11 @@ final class StartMenuFeature: Feature, @unchecked Sendable {
         if let g = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] _ in
             MainActor.assumeIsolated { self?.noteKey() }
         }) { keyMonitors.append(g) }
+        // A hotkey's key press never reaches the monitor above (Win + arrow).
+        hotKeyObserver = NotificationCenter.default.addObserver(
+            forName: .hotKeyFired, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated { self?.noteKey() }
+        }
     }
 
     @MainActor

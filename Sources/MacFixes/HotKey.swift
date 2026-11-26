@@ -115,6 +115,12 @@ extension KeyCombo {
     }
 }
 
+extension Notification.Name {
+    /// A registered global hotkey fired. The system swallows its key press, so
+    /// anything watching for "a key was pressed" listens for this as well.
+    static let hotKeyFired = Notification.Name("com.filipkin.macfixes.hotKeyFired")
+}
+
 /// Registers global hotkeys via Carbon. No Accessibility permission needed.
 final class HotKeyCenter {
     // Only touched on the main run loop (register + Carbon's event handler).
@@ -135,6 +141,7 @@ final class HotKeyCenter {
             GetEventParameter(event, EventParamName(kEventParamDirectObject),
                               EventParamType(typeEventHotKeyID), nil,
                               MemoryLayout<EventHotKeyID>.size, nil, &id)
+            NotificationCenter.default.post(name: .hotKeyFired, object: nil)
             HotKeyCenter.shared.handlers[id.id]?()
             return noErr
         }, 1, &spec, nil, &eventHandler)

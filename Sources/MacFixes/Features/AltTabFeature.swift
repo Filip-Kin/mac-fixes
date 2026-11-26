@@ -191,16 +191,20 @@ final class AltTabModel: ObservableObject, @unchecked Sendable {
     @Published var selection = 0
     @Published private(set) var thumbnails: [CGWindowID: NSImage] = [:]
     var onCommit: (() -> Void)?
+    /// Clicking the dimmed backdrop (the snap picker closes on it).
+    var onCancel: (() -> Void)?
 
     private var thumbCache: [CGWindowID: NSImage] = [:]
 
+    /// `excluding` leaves windows out; `currentSpaceOnly` skips windows on
+    /// other Spaces (the snap picker can only place windows it can reach).
     @MainActor
-    func build() {
+    func build(excluding: Set<CGWindowID> = [], currentSpaceOnly: Bool = false) {
         var nameByPid: [pid_t: String] = [:]
         var iconByPid: [pid_t: NSImage?] = [:]
         var axByPid: [pid_t: [CGWindowID: AXUIElement]] = [:]
         var list: [Win] = []
-        for w in AXWindow.allWindows() {
+        for w in AXWindow.allWindows() where !excluding.contains(w.id) {
             guard let app = NSRunningApplication(processIdentifier: w.pid),
                   app.activationPolicy == .regular else { continue }
             if axByPid[w.pid] == nil { axByPid[w.pid] = AXWindow.axWindowsByID(pid: w.pid) }
@@ -221,7 +225,8 @@ final class AltTabModel: ObservableObject, @unchecked Sendable {
         // on a Space is a real, un-minimized one. Hidden tab windows and
         // helpers belong to no Space or have no title and are left out.
         let seen = Set(list.map(\.id))
-        for w in AXWindow.allWindows(onScreenOnly: false) where !seen.contains(w.id) {
+        for w in (currentSpaceOnly ? [] : AXWindow.allWindows(onScreenOnly: false))
+        where !seen.contains(w.id) && !excluding.contains(w.id) {
             guard !w.title.isEmpty, w.frame.width >= 200, w.frame.height >= 120,
                   let app = NSRunningApplication(processIdentifier: w.pid),
                   app.activationPolicy == .regular, !app.isHidden else { continue }
@@ -289,21 +294,36 @@ final class AltTabModel: ObservableObject, @unchecked Sendable {
 
 private struct AltTabRoot: View {
     @ObservedObject var model: AltTabModel
+    /// True when the panel covers only part of a screen (the snap picker), so
+    /// the grid must fit inside it.
+    var fitted = false
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.35).ignoresSafeArea()
-            AltTabView(model: model)
+        GeometryReader { geo in
+            ZStack {
+                Color.black.opacity(0.35).ignoresSafeArea()
+                    .onTapGesture { model.onCancel?() }
+                AltTabView(model: model, fitting: fitted ? geo.size : nil)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
     }
 }
 
 private struct AltTabView: View {
     @ObservedObject var model: AltTabModel
+    /// The space the grid must fit in, or nil for a whole screen. When set,
+    /// columns are capped to the width, a grid too tall scrolls, and hovering
+    /// a card highlights it (there is no keyboard selection to disturb).
+    var fitting: CGSize? = nil
+
+    private static let cardWidth: CGFloat = 200, gap: CGFloat = 16
+    private static let chrome: CGFloat = 120      // outer margin + inner padding, both sides
 
     /// Balanced grid like Windows: a near-square number of columns, each row
     /// centered (so 5 windows lay out as a centered 3 + 2).
     private var columns: Int {
-        min(6, max(1, Int(ceil(Double(model.windows.count).squareRoot()))))
+        let fit = fitting.map { max(1, Int(($0.width - Self.chrome + Self.gap) / (Self.cardWidth + Self.gap))) } ?? 6
+        return min(6, fit, max(1, Int(ceil(Double(model.windows.count).squareRoot()))))
     }
 
     private var rows: [[Int]] {
@@ -318,27 +338,37 @@ private struct AltTabView: View {
     }
 
     var body: some View {
-        VStack(spacing: 10) {
-            VStack(spacing: 16) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    HStack(spacing: 16) {
-                        ForEach(row, id: \.self) { idx in
-                            AltTabCard(win: model.windows[idx],
-                                       thumb: model.thumbnails[model.windows[idx].id],
-                                       selected: idx == model.selection)
-                                .frame(width: 200)
-                                .onTapGesture { model.selection = idx; model.onCommit?() }
-                        }
+        let grid = VStack(spacing: Self.gap) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: Self.gap) {
+                    ForEach(row, id: \.self) { idx in
+                        AltTabCard(win: model.windows[idx],
+                                   thumb: model.thumbnails[model.windows[idx].id],
+                                   selected: idx == model.selection)
+                            .frame(width: Self.cardWidth)
+                            .onTapGesture { model.selection = idx; model.onCommit?() }
+                            .onHover { if $0, fitting != nil { model.selection = idx } }
                     }
                 }
             }
-            .padding(20)
+        }
+        .padding(20)
+        let gridWidth = CGFloat(columns) * Self.cardWidth + CGFloat(columns - 1) * Self.gap + 40
+        return VStack(spacing: 10) {
+            if fitting != nil {
+                ViewThatFits(in: .vertical) {
+                    grid
+                    ScrollView { grid }.frame(width: gridWidth)
+                }
+            } else {
+                grid
+            }
             if model.windows.indices.contains(model.selection) {
                 Text(model.windows[model.selection].title)
                     .font(.headline).lineLimit(1).padding(.bottom, 10)
             }
         }
-        .fixedSize(horizontal: true, vertical: true)
+        .fixedSize(horizontal: true, vertical: fitting == nil)
         .glassPanel(20)
         .padding(40)
     }
@@ -380,7 +410,7 @@ private struct AltTabCard: View {
 // MARK: - Panel
 
 final class AltTabPanel: NSPanel {
-    init(model: AltTabModel) {
+    init(model: AltTabModel, fitted: Bool = false) {
         super.init(contentRect: .zero,
                    styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
@@ -391,7 +421,7 @@ final class AltTabPanel: NSPanel {
         isOpaque = false
         hasShadow = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        let host = NSHostingView(rootView: AltTabRoot(model: model))
+        let host = NSHostingView(rootView: AltTabRoot(model: model, fitted: fitted))
         host.autoresizingMask = [.width, .height]
         contentView = host
     }

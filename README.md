@@ -74,6 +74,14 @@ while it is on. The same as `caffeinate -d`, without the terminal window.
 - **Adaptive drag-to-edge snapping.** Drag a window to an edge or corner to snap
   it, filling the space left by other windows. Enabling it turns off macOS's own
   edge-tiling so the two don't fight. Off by default.
+- **Win + arrows.** `Control` + `← →` snaps to a half and then on to the next
+  monitor, `↑` maximizes or takes the top corner, `↓` restores, takes the bottom
+  corner or minimizes. `Control+Shift` + `← →` moves the window to the next
+  monitor as it is. While on, the macOS shortcuts on those keys (Mission
+  Control, switching desktops) are switched off. Off by default.
+- **Snap picker.** After a window is snapped to a half or corner, the empty
+  space shows every other window as thumbnails; click one to snap it in there.
+  Off by default.
 - **Divider resize.** Drag the shared edge between two snapped windows to resize
   both at once.
 - **Close quits the app.** When a regular app's last window closes, quit it

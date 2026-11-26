@@ -315,6 +315,12 @@ private struct WindowsPane: View {
                        get: { win.snappingEnabled }, set: { win.snappingEnabled = $0 })
                 toggle("Drag a window to a screen edge to snap it (adaptive)",
                        get: { win.dragSnapEnabled }, set: { win.dragSnapEnabled = $0 })
+                toggle(features.keyboard.swapModifiers
+                       ? "Win + arrows move a window between snap positions and monitors"
+                       : "Control + arrows move a window between snap positions and monitors",
+                       get: { win.arrowSnapEnabled }, set: { win.arrowSnapEnabled = $0 })
+                toggle("After snapping, pick another window to fill the space beside it",
+                       get: { win.snapAssistEnabled }, set: { win.snapAssistEnabled = $0 })
                 toggle("Drag the divider between two snapped windows to resize both",
                        get: { win.dividerResizeEnabled }, set: { win.dividerResizeEnabled = $0 })
                 toggle("Focus the window under the cursor (hover to focus)",
@@ -341,6 +347,8 @@ private struct WindowsPane: View {
             Text(winKeys
                  ? "Maximize Win+Alt+Enter  ·  Halves Win+Alt+ ← → ↑ ↓  ·  Quarters Win+Alt+ U I J K  ·  Centre Win+Alt+C"
                  : "Maximize ⌃⌥↩  ·  Halves ⌃⌥ ← → ↑ ↓  ·  Quarters ⌃⌥ U I J K  ·  Centre ⌃⌥ C")
+                .font(.callout).foregroundStyle(.secondary)
+            Text((winKeys ? "Win" : "⌃") + " + ← → snaps to a half, then on to the next monitor. ↑ maximizes or takes the top corner, ↓ restores, takes the bottom corner or minimizes. Add Shift to ← → to move the window to the next monitor as it is. While this is on, the macOS shortcuts on the same keys (Mission Control, switching desktops) are switched off.")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .id(refresh)
