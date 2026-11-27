@@ -200,7 +200,7 @@ final class ArrowSnap: @unchecked Sendable {
 
     @MainActor private func move(_ arrow: Arrow) {
         assist?.dismiss()
-        guard let win = AXWindow.focusedWindow(), let frame = AXWindow.frame(of: win) else { return }
+        guard let win = AXWindow.frontmostWindow(), let frame = AXWindow.frame(of: win) else { return }
         let screen = AXWindow.screen(forAX: frame)
         let vf = AXWindow.axVisibleFrame(screen)
         switch Self.outcome(arrow, from: WindowPosition.of(frame, in: vf), on: screen) {
@@ -222,7 +222,7 @@ final class ArrowSnap: @unchecked Sendable {
 
     @MainActor private func moveToNextScreen(_ arrow: Arrow) {
         assist?.dismiss()
-        guard let win = AXWindow.focusedWindow(), let frame = AXWindow.frame(of: win) else { return }
+        guard let win = AXWindow.frontmostWindow(), let frame = AXWindow.frame(of: win) else { return }
         let screen = AXWindow.screen(forAX: frame)
         let target = Self.neighbour(of: screen, arrow)
         guard target != screen else { return }

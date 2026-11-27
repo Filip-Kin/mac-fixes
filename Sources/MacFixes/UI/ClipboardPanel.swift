@@ -33,7 +33,7 @@ final class ClipboardPanel {
         // Remember the window being typed in: the panel takes key focus for its
         // search field, and macOS does not hand it back when the panel closes.
         previousWindow = nil
-        if let w = AXWindow.focusedWindow() {
+        if let w = AXWindow.frontmostWindow() {
             var pid: pid_t = 0
             if AXUIElementGetPid(w, &pid) == .success, pid != ProcessInfo.processInfo.processIdentifier {
                 previousWindow = (w, pid)

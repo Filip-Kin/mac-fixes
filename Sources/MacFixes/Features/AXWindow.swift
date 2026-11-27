@@ -45,23 +45,11 @@ enum AXWindow {
         }
     }
 
-    static func focusedWindow() -> AXUIElement? {
-        let system = AXUIElementCreateSystemWide()
-        var appRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedApplicationAttribute as CFString, &appRef) == .success,
-              let appElement = appRef, CFGetTypeID(appElement) == AXUIElementGetTypeID()
-        else { return nil }
-        let app = appElement as! AXUIElement
-
-        var winRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
-              let winElement = winRef, CFGetTypeID(winElement) == AXUIElementGetTypeID()
-        else { return nil }
-        return (winElement as! AXUIElement)
-    }
-
-    /// The frontmost app's focused window. More reliable than the system-wide
-    /// focused-application query during a drag (which can return nil).
+    /// The window the user is working in: the frontmost app's focused window.
+    /// Not the system-wide focused-application query, which follows keyboard
+    /// focus: that is one of our own panels after a click on the taskbar (they
+    /// take key focus without becoming the frontmost app), and can be nil
+    /// during a drag.
     static func frontmostWindow() -> AXUIElement? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)

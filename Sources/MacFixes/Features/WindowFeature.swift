@@ -144,7 +144,7 @@ final class WindowFeature: Feature, @unchecked Sendable {
 
     /// Move the focused window to a position (also used by the menu).
     static func apply(_ pos: WindowPosition) {
-        guard let win = AXWindow.focusedWindow(), let frame = AXWindow.frame(of: win) else { return }
+        guard let win = AXWindow.frontmostWindow(), let frame = AXWindow.frame(of: win) else { return }
         let vf = AXWindow.axVisibleFrame(AXWindow.screen(forAX: frame))
         AXWindow.setFrame(win, pos.rect(in: vf))
     }
